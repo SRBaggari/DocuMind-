@@ -2,7 +2,7 @@
 
 DocuMind is a standalone application for understanding documents: upload PDF, DOCX or TXT files, then summarize them, ask questions, extract key information and compare them. All AI processing runs on your own computer. It needs no API keys or cloud accounts.
 
-> **Status: Phase 2 (document ingestion).** You can upload, validate, extract and store documents. Summaries, question answering, comparison and insights are not implemented yet, so their modules are still placeholders. The full README is written in Phase 8.
+> **Status: Phase 3 (NLP engine).** Upload, extraction, chunking, embeddings, semantic search, keywords and topics work at module level. Summaries, question answering and comparison are not implemented yet, and search has no page of its own until later phases. The full README is written in Phase 8.
 
 ## Architecture
 
@@ -27,9 +27,10 @@ config.py   Every setting. Any layer may import it.
 | `core/document_loader.py` | Extract text and structure from PDF (PyMuPDF), DOCX and TXT, keeping page numbers |
 | `core/text_cleaner.py` | Normalize whitespace, control characters and paragraphs |
 | `core/ingestion.py` | Run an upload through validation, storage, extraction and metadata recording |
-| `core/chunker.py` | Split text into sentence-aligned, overlapping chunks with source metadata |
+| `core/chunker.py` | Split text into sentence-aligned, overlapping chunks and smaller search passages |
 | `core/embedding_engine.py` | Load the embedding model once; embed chunks and queries |
-| `core/vector_store.py` | Own the FAISS index and NumPy fallback: add, remove, search, persist, rebuild |
+| `core/vector_store.py` | Own the FAISS index and NumPy fallback: add, remove, search, persist |
+| `core/indexing.py` | Keep chunks, embeddings, SQLite and the index in step; repair them at startup |
 | `core/retriever.py` | Turn a query into ranked chunks, with document filtering and a relevance floor |
 | `core/keyword_extractor.py` | TF-IDF keywords and keyphrases; NMF topics |
 | `core/ollama_client.py` | Talk to the local Ollama service: status, model list, generation |
@@ -49,14 +50,14 @@ config.py   Every setting. Any layer may import it.
 **Ingestion**
 
 ```
-upload → validate → SHA-256 duplicate check → store file → extract → clean
-       → chunk → embed → add to FAISS → mark document "ready" in SQLite
+upload → validate → SHA-256 duplicate check → store file → extract → clean → mark "ready"
+       → chunk → embed passages → record in SQLite → add to FAISS → mark "indexed"
 ```
 
 **Question answering**
 
 ```
-question → embed → FAISS top-K → drop results below the relevance floor
+question → embed → FAISS passages → drop results below the relevance floor → group by chunk
   ├─ no evidence left    → "not enough evidence in the document"
   ├─ Ollama available    → grounded prompt → answer + citations   (labelled LLM)
   └─ Ollama unavailable  → best-matching sentences + citations    (labelled extractive)
@@ -71,12 +72,16 @@ question → embed → FAISS top-K → drop results below the relevance floor
 | Vector index | `indexes/` | Derived data, rebuilt from `processed/` when needed |
 | Metadata and chat history | `documind.db` | SQLite; holds no full document text |
 
-**SQLite is the source of truth; FAISS is a rebuildable cache.** Vectors use integer IDs stored against each chunk row in an `IndexIDMap2` over `IndexFlatIP`. That index is exact, equals cosine similarity on normalized vectors, and supports deletion. A document is marked `ready` only after its vectors are saved, and the index is replaced atomically. At startup the index is checked against SQLite and rebuilt if they differ.
+**SQLite is the source of truth; FAISS is a rebuildable cache.** Each vector has an integer ID from the `vectors` table, which is never reused, and is held in an `IndexIDMap2` over `IndexFlatIP`. That index is exact, equals cosine similarity on normalized vectors, and supports deletion. Files are written first, then SQLite commits, then the index updates and is replaced atomically. At startup any difference between the index and SQLite is repaired from the stored embeddings, without loading the model.
+
+A document whose text was extracted but could not be indexed, for example because the embedding model is not downloaded yet, stays `ready` with its search status `pending`, and can be indexed later.
 
 ### Key design decisions
 
 - **Data stays out of cloud-synced folders.** If the project is inside OneDrive, Dropbox, Google Drive or iCloud, data is stored in `%LOCALAPPDATA%\DocuMind\data` instead of `data/`. Sync clients would otherwise upload documents to their servers and can corrupt a live SQLite file. Set `DOCUMIND_DATA_DIR` to choose a different location.
-- **Long chunks are embedded in windows.** `all-MiniLM-L6-v2` reads at most 256 tokens, so a 500-token chunk would be silently cut in half. Each chunk is embedded in windows of up to 256 tokens, then pooled and normalized. The LLM still receives the full chunk.
+- **Search runs over passages, not whole chunks.** `all-MiniLM-L6-v2` reads at most 256 tokens, and one vector for a 500-token chunk blurs together every subject in it. Each chunk is therefore split into passages of about 128 tokens with a vector each. A search matches passages and returns their parent chunks, so the LLM still gets the full context. In testing this took right-document retrieval from 13 of 14 questions to 14 of 14.
+- **Chunks never cross a page.** A chunk's page number is therefore always exact, at the cost of smaller chunks on short pages.
+- **The relevance floor is measured, not guessed.** On 28 test questions, relevant passages scored at least 0.28 and unrelated ones at most 0.19, so `min_similarity` is 0.25. Results below it are dropped, never shown as weak matches.
 - **Ollama is restricted to loopback.** `config.py` rejects any Ollama URL that does not point at this machine.
 - **Streamlit telemetry is off** and the server binds to `localhost` (see `.streamlit/config.toml`).
 
