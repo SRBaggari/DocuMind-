@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# User documents and everything derived from them: never commit these
+data/uploads/*
+data/processed/*
+data/indexes/*
+data/*.db
+data/*.db-*
+!data/uploads/.gitkeep
+!data/processed/.gitkeep
+!data/indexes/.gitkeep
+logs/
+*.log
+
+# Local overrides
+.env
+.streamlit/secrets.toml
+
+# Editors and OS
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store
