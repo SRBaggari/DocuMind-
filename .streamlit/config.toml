@@ -1,0 +1,11 @@
+# Streamlit sends usage statistics by default. DocuMind is offline-first, so this stays off.
+[browser]
+gatherUsageStats = false
+
+[server]
+# Serve this machine only, not the local network.
+address = "localhost"
+# Keep in step with MAX_FILE_SIZE_MB in config.py; this limit is enforced by Streamlit's uploader.
+maxUploadSize = 50
+# The watcher walks torch's lazy modules and logs errors on every rerun.
+fileWatcherType = "none"
