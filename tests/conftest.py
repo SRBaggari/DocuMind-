@@ -2,16 +2,48 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import re
+import zlib
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import docx
+import numpy as np
 import pymupdf
 import pytest
 
 from config import Paths, Settings, ensure_directories
+from core.indexing import DocumentIndexer
 from core.ingestion import DocumentIngestor
+from core.retriever import Retriever
+from core.vector_store import VectorStore
 from database.db_manager import DatabaseManager
+
+
+class HashingEmbedder:
+    """A fast deterministic stand-in for tests: texts sharing words have similar vectors.
+
+    Tests of the real model are in test_embedding_engine.py.
+    """
+
+    def __init__(self, model_name: str = "test-hashing-model") -> None:
+        self.model_name = model_name
+        self.calls = 0
+
+    def _vector(self, text: str) -> np.ndarray:
+        vector = np.zeros(384, dtype=np.float32)
+        for word in re.findall(r"\w+", text.lower()):
+            vector[zlib.crc32(word.encode()) % 384] += 1
+        if not vector.any():
+            vector[0] = 1
+        return vector / np.linalg.norm(vector)
+
+    def embed_texts(self, texts: Sequence[str], progress: object = None) -> np.ndarray:
+        self.calls += 1
+        return np.stack([self._vector(text) for text in texts]) if texts else np.empty((0, 384))
+
+    def embed_query(self, query: str) -> np.ndarray:
+        return self._vector(query)
 
 
 def _png_bytes() -> bytes:
@@ -72,3 +104,28 @@ def db(test_settings: Settings) -> DatabaseManager:
 @pytest.fixture
 def ingestor(db: DatabaseManager, test_settings: Settings) -> DocumentIngestor:
     return DocumentIngestor(db, test_settings)
+
+
+@pytest.fixture
+def embedder() -> HashingEmbedder:
+    return HashingEmbedder()
+
+
+@pytest.fixture
+def store(test_settings: Settings) -> VectorStore:
+    return VectorStore(test_settings.paths.indexes_dir, test_settings.embedding.dimension)
+
+
+@pytest.fixture
+def indexer(db, store, embedder, test_settings) -> DocumentIndexer:
+    return DocumentIndexer(db, store, embedder, test_settings)
+
+
+@pytest.fixture
+def indexed_ingestor(db, test_settings, indexer) -> DocumentIngestor:
+    return DocumentIngestor(db, test_settings, indexer)
+
+
+@pytest.fixture
+def retriever(db, store, embedder, indexer, test_settings) -> Retriever:
+    return Retriever(db, store, embedder, indexer, test_settings.retrieval)
