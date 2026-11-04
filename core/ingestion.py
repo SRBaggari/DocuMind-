@@ -22,15 +22,16 @@ from core.document_loader import (
     OCRRequiredError,
     load_document,
 )
+from core.embedding_engine import EmbeddingModelError, ProgressCallback
+from core.indexing import CONTENT_FILENAME, DocumentIndexer, document_dir, read_content
 from database.db_manager import DatabaseManager, DuplicateDocumentError
-from database.schema import DocumentRecord, DocumentStatus
+from database.schema import DocumentRecord, DocumentStatus, IndexStatus
 from utils.file_validation import FileValidationError, safe_child_path, validate_upload
 from utils.helpers import atomic_write_bytes, new_document_id, sha256_bytes, utc_now_iso
 from utils.text_utils import count_paragraphs, count_words
 
 logger = logging.getLogger("documind.ingestion")
 
-_CONTENT_FILENAME = "content.json"
 _CONTENT_FORMAT_VERSION = 1
 _RETRYABLE_STATUSES = (DocumentStatus.FAILED, DocumentStatus.NEEDS_OCR)
 
@@ -52,11 +53,19 @@ class IngestResult:
 
 
 class DocumentIngestor:
-    def __init__(self, db: DatabaseManager, settings: Settings = default_settings) -> None:
+    def __init__(
+        self,
+        db: DatabaseManager,
+        settings: Settings = default_settings,
+        indexer: DocumentIndexer | None = None,
+    ) -> None:
         self._db = db
         self._settings = settings
+        self._indexer = indexer
 
-    def ingest(self, filename: str, data: bytes) -> IngestResult:
+    def ingest(
+        self, filename: str, data: bytes, progress: ProgressCallback | None = None
+    ) -> IngestResult:
         """Process one upload. Expected failures are returned, not raised."""
         config = self._settings.ingestion
         try:
@@ -94,7 +103,7 @@ class DocumentIngestor:
             if winner:
                 return self._duplicate(display_name, winner)
             raise
-        return self._process(record, extension, data)
+        return self._process(record, extension, data, progress)
 
     def _duplicate(self, display_name: str, existing: DocumentRecord) -> IngestResult:
         return IngestResult(
@@ -104,7 +113,13 @@ class DocumentIngestor:
             existing,
         )
 
-    def _process(self, record: DocumentRecord, extension: str, data: bytes) -> IngestResult:
+    def _process(
+        self,
+        record: DocumentRecord,
+        extension: str,
+        data: bytes,
+        progress: ProgressCallback | None,
+    ) -> IngestResult:
         document_id = record.document_id
         upload_path = self._upload_path(document_id, extension)
         try:
@@ -140,7 +155,30 @@ class DocumentIngestor:
             char_count=len(text),
         )
         logger.info("Processed document %s", document_id)
-        return self._result(record, IngestOutcome.READY, "Processed successfully.")
+        message = self._index(document_id, extracted, progress)
+        return self._result(record, IngestOutcome.READY, message)
+
+    def _index(
+        self,
+        document_id: str,
+        extracted: ExtractedDocument,
+        progress: ProgressCallback | None,
+    ) -> str:
+        """Index a processed document. Failure leaves its text available and retryable."""
+        if self._indexer is None:
+            return "Processed successfully."
+        pages = [asdict(page) for page in extracted.pages]
+        try:
+            self._indexer.index_document(document_id, pages, progress)
+        except EmbeddingModelError as exc:
+            self._db.clear_index_state(document_id, IndexStatus.PENDING, str(exc))
+            return f"Text extracted, but search is unavailable. {exc}"
+        except Exception:
+            logger.exception("Unexpected failure indexing document %s", document_id)
+            message = "Indexing failed. See the log for details."
+            self._db.clear_index_state(document_id, IndexStatus.FAILED, message)
+            return f"Text extracted, but search is unavailable. {message}"
+        return "Processed and indexed successfully."
 
     def _fail(self, record: DocumentRecord, extension: str, message: str) -> IngestResult:
         self._remove_files(record.document_id, extension)
@@ -160,7 +198,7 @@ class DocumentIngestor:
         return safe_child_path(self._settings.paths.uploads_dir, document_id, extension)
 
     def _content_dir(self, document_id: str) -> Path:
-        return safe_child_path(self._settings.paths.processed_dir, document_id)
+        return document_dir(self._settings.paths, document_id)
 
     def _save_content(self, document_id: str, extracted: ExtractedDocument) -> None:
         content = {
@@ -171,12 +209,11 @@ class DocumentIngestor:
             "blocks": [asdict(block) for block in extracted.blocks],
         }
         payload = json.dumps(content, ensure_ascii=False).encode("utf-8")
-        atomic_write_bytes(self._content_dir(document_id) / _CONTENT_FILENAME, payload)
+        atomic_write_bytes(self._content_dir(document_id) / CONTENT_FILENAME, payload)
 
     def load_content(self, document_id: str) -> dict[str, Any]:
         """Return the stored extraction for a processed document."""
-        path = self._content_dir(document_id) / _CONTENT_FILENAME
-        return json.loads(path.read_text(encoding="utf-8"))
+        return read_content(self._settings.paths, document_id)
 
     def _remove_files(self, document_id: str, extension: str) -> None:
         self._upload_path(document_id, extension).unlink(missing_ok=True)
@@ -189,6 +226,8 @@ class DocumentIngestor:
         record = self._db.get_document(document_id)
         if record is None:
             return False
+        if self._indexer is not None:
+            self._indexer.remove_document(document_id)
         self._remove_files(document_id, f".{record.file_type}")
         self._db.delete_document(document_id)
         logger.info("Deleted document %s", document_id)
