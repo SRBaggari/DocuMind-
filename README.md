@@ -2,7 +2,7 @@
 
 DocuMind is a standalone application for understanding documents: upload PDF, DOCX or TXT files, then summarize them, ask questions, extract key information and compare them. All AI processing runs on your own computer. It needs no API keys or cloud accounts.
 
-> **Status: Phase 1 (architecture and scaffold).** The modules under `core/`, `database/`, `ui/` and `utils/` are placeholders. No document features work yet. The full README is written in Phase 8.
+> **Status: Phase 2 (document ingestion).** You can upload, validate, extract and store documents. Summaries, question answering, comparison and insights are not implemented yet, so their modules are still placeholders. The full README is written in Phase 8.
 
 ## Architecture
 
@@ -26,6 +26,7 @@ config.py   Every setting. Any layer may import it.
 | --- | --- |
 | `core/document_loader.py` | Extract text and structure from PDF (PyMuPDF), DOCX and TXT, keeping page numbers |
 | `core/text_cleaner.py` | Normalize whitespace, control characters and paragraphs |
+| `core/ingestion.py` | Run an upload through validation, storage, extraction and metadata recording |
 | `core/chunker.py` | Split text into sentence-aligned, overlapping chunks with source metadata |
 | `core/embedding_engine.py` | Load the embedding model once; embed chunks and queries |
 | `core/vector_store.py` | Own the FAISS index and NumPy fallback: add, remove, search, persist, rebuild |
@@ -104,5 +105,7 @@ streamlit run app.py
 ```
 
 `py -3.12` finds python.org installs only. If it reports "No suitable Python runtime found", run `py --list` and use the listed tag instead, for example `py -V:Astral/CPython3.12.14 -m venv ...`.
+
+Run the tests with `pytest`. Sample documents are generated during the run.
 
 The embedding model (about 90 MB) downloads from Hugging Face on first use, then runs from the local cache. That download contains no document data.
