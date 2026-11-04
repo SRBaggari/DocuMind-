@@ -120,6 +120,12 @@ class IngestionConfig:
 class ChunkingConfig:
     chunk_size_tokens: int = 500
     chunk_overlap_tokens: int = 100
+    # Close a chunk early at a paragraph end once it is this full, rather than
+    # splitting the next paragraph across two chunks.
+    paragraph_break_ratio: float = 0.6
+    # Each chunk is searched as passages of about this size, because one vector for a
+    # 500-token chunk blurs together every subject in it.
+    passage_size_tokens: int = 128
 
     def __post_init__(self) -> None:
         if not 0 <= self.chunk_overlap_tokens < self.chunk_size_tokens:
@@ -134,8 +140,8 @@ class EmbeddingConfig:
         )
     )
     dimension: int = 384
-    # all-MiniLM-L6-v2 truncates input beyond this, which is shorter than a default
-    # chunk. Longer chunks are embedded in windows of this size and then pooled.
+    # all-MiniLM-L6-v2 truncates input beyond this. Any longer text is embedded in
+    # windows of this size and then pooled, so none of it is ignored.
     max_input_tokens: int = 256
     batch_size: int = 32
     # CPU keeps the laptop GPU's limited VRAM free for Ollama.
@@ -145,9 +151,9 @@ class EmbeddingConfig:
 @dataclass(frozen=True)
 class RetrievalConfig:
     top_k: int = 5
-    # Provisional cosine floor below which evidence counts as insufficient.
-    # To be calibrated against real documents in Phase 3.
-    min_similarity: float = 0.30
+    # Cosine floor below which evidence counts as insufficient. Calibrated on 28 test
+    # questions: relevant passages scored 0.28 or higher, unrelated ones 0.19 or lower.
+    min_similarity: float = 0.25
 
 
 @dataclass(frozen=True)
@@ -172,6 +178,7 @@ class AnalysisConfig:
     max_keywords: int = 20
     max_topics: int = 5
     terms_per_topic: int = 8
+    sections_per_topic: int = 3
     similar_passage_threshold: float = 0.75
     reading_words_per_minute: int = 200
 
