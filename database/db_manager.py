@@ -6,11 +6,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
-from database.schema import MIGRATIONS, DocumentRecord, DocumentStatus
+from database.schema import (
+    MIGRATIONS,
+    DocumentRecord,
+    DocumentStatus,
+    IndexStatus,
+    VectorRow,
+)
 
 _BUSY_TIMEOUT_SECONDS = 10.0
 
@@ -23,6 +29,7 @@ def _to_record(row: sqlite3.Row) -> DocumentRecord:
     values = dict(row)
     values["status"] = DocumentStatus(values["status"])
     values["warnings"] = tuple(json.loads(values["warnings"]))
+    values["index_status"] = IndexStatus(values["index_status"])
     return DocumentRecord(**values)
 
 
@@ -146,3 +153,113 @@ class DatabaseManager:
     def delete_document(self, document_id: str) -> None:
         with self._connect() as connection:
             connection.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))
+
+    def replace_chunks(
+        self,
+        document_id: str,
+        chunks: Sequence[tuple[str, int, int | None, int, int]],
+        model: str,
+    ) -> list[int]:
+        """Store a document's chunks and vectors and mark it indexed, in one transaction.
+
+        ``chunks`` holds ``(chunk_id, chunk_index, page_number, token_count, passages)``
+        in chunk_index order. Returns one vector ID per passage, in that same order,
+        which is also the row order of the document's embeddings file.
+        """
+        vector_ids: list[int] = []
+        with self._connect() as connection:
+            connection.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
+            for chunk_id, chunk_index, page_number, token_count, passages in chunks:
+                connection.execute(
+                    """
+                    INSERT INTO chunks (
+                        chunk_id, document_id, chunk_index, page_number, token_count
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (chunk_id, document_id, chunk_index, page_number, token_count),
+                )
+                for passage_index in range(passages):
+                    cursor = connection.execute(
+                        """
+                        INSERT INTO vectors (chunk_id, passage_index, embedding_row)
+                        VALUES (?, ?, ?)
+                        """,
+                        (chunk_id, passage_index, len(vector_ids)),
+                    )
+                    vector_ids.append(cursor.lastrowid)
+            connection.execute(
+                """
+                UPDATE documents
+                SET index_status = 'indexed', index_message = NULL,
+                    chunk_count = ?, embedding_model = ?
+                WHERE document_id = ?
+                """,
+                (len(chunks), model, document_id),
+            )
+        return vector_ids
+
+    def clear_index_state(
+        self,
+        document_id: str,
+        status: IndexStatus = IndexStatus.PENDING,
+        message: str | None = None,
+    ) -> None:
+        """Remove a document's chunks and record why it is not indexed."""
+        with self._connect() as connection:
+            connection.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
+            connection.execute(
+                """
+                UPDATE documents
+                SET index_status = ?, index_message = ?, chunk_count = NULL,
+                    embedding_model = NULL
+                WHERE document_id = ?
+                """,
+                (status.value, message, document_id),
+            )
+
+    def clear_all_index_state(self) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM chunks")
+            connection.execute(
+                """
+                UPDATE documents
+                SET index_status = 'pending', index_message = NULL, chunk_count = NULL,
+                    embedding_model = NULL
+                """
+            )
+
+    def list_unindexed(self) -> list[DocumentRecord]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM documents WHERE status = 'ready' AND index_status != 'indexed'"
+            ).fetchall()
+        return [_to_record(row) for row in rows]
+
+    def get_vector_rows(self, vector_ids: Iterable[int]) -> dict[int, VectorRow]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT v.vector_id, v.chunk_id, c.document_id, c.chunk_index,
+                       c.page_number, v.passage_index, v.embedding_row
+                FROM vectors v JOIN chunks c ON c.chunk_id = v.chunk_id
+                WHERE v.vector_id IN (SELECT value FROM json_each(?))
+                """,
+                (json.dumps(list(vector_ids)),),
+            ).fetchall()
+        return {row["vector_id"]: VectorRow(**dict(row)) for row in rows}
+
+    def get_vector_ids(self, document_ids: Iterable[str] | None = None) -> set[int]:
+        """Return all vector IDs, or only those belonging to ``document_ids``."""
+        with self._connect() as connection:
+            if document_ids is None:
+                rows = connection.execute("SELECT vector_id FROM vectors").fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT v.vector_id FROM vectors v
+                    JOIN chunks c ON c.chunk_id = v.chunk_id
+                    WHERE c.document_id IN (SELECT value FROM json_each(?))
+                    """,
+                    (json.dumps(list(document_ids)),),
+                ).fetchall()
+        return {row["vector_id"] for row in rows}

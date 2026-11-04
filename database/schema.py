@@ -13,6 +13,12 @@ class DocumentStatus(StrEnum):
     FAILED = "failed"
 
 
+class IndexStatus(StrEnum):
+    PENDING = "pending"
+    INDEXED = "indexed"
+    FAILED = "failed"
+
+
 @dataclass(frozen=True)
 class DocumentRecord:
     document_id: str
@@ -29,6 +35,23 @@ class DocumentRecord:
     word_count: int | None = None
     char_count: int | None = None
     processed_timestamp: str | None = None
+    index_status: IndexStatus = IndexStatus.PENDING
+    index_message: str | None = None
+    chunk_count: int | None = None
+    embedding_model: str | None = None
+
+
+@dataclass(frozen=True)
+class VectorRow:
+    """Where a search vector came from. Text lives in the document's chunks.json file."""
+
+    vector_id: int
+    chunk_id: str
+    document_id: str
+    chunk_index: int
+    page_number: int | None
+    passage_index: int
+    embedding_row: int
 
 
 MIGRATIONS: tuple[str, ...] = (
@@ -51,5 +74,28 @@ MIGRATIONS: tuple[str, ...] = (
         processed_timestamp TEXT
     );
     CREATE INDEX idx_documents_status ON documents (status);
+    """,
+    # AUTOINCREMENT stops a deleted vector's ID ever being given to a new vector.
+    """
+    ALTER TABLE documents ADD COLUMN index_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (index_status IN ('pending', 'indexed', 'failed'));
+    ALTER TABLE documents ADD COLUMN index_message TEXT;
+    ALTER TABLE documents ADD COLUMN chunk_count INTEGER;
+    ALTER TABLE documents ADD COLUMN embedding_model TEXT;
+    CREATE TABLE chunks (
+        chunk_id    TEXT PRIMARY KEY,
+        document_id TEXT NOT NULL REFERENCES documents (document_id) ON DELETE CASCADE,
+        chunk_index INTEGER NOT NULL,
+        page_number INTEGER,
+        token_count INTEGER NOT NULL,
+        UNIQUE (document_id, chunk_index)
+    );
+    CREATE TABLE vectors (
+        vector_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+        chunk_id      TEXT NOT NULL REFERENCES chunks (chunk_id) ON DELETE CASCADE,
+        passage_index INTEGER NOT NULL,
+        embedding_row INTEGER NOT NULL,
+        UNIQUE (chunk_id, passage_index)
+    );
     """,
 )
