@@ -9,3 +9,18 @@ address = "localhost"
 maxUploadSize = 50
 # The watcher walks torch's lazy modules and logs errors on every rerun.
 fileWatcherType = "none"
+
+[client]
+# Hide the deploy button and developer menu.
+toolbarMode = "minimal"
+
+[theme]
+base = "light"
+primaryColor = "#1f66c1"
+backgroundColor = "#fafbfc"
+secondaryBackgroundColor = "#f1f3f6"
+textColor = "#1f2328"
+borderColor = "#e4e7ec"
+baseRadius = "10px"
+# System fonts only: a web font would be a request to an outside server.
+font = "'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif"
