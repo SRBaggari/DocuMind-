@@ -46,6 +46,10 @@ _KEYWORD_MIN_SCORE = 0.05
 _RERANK_TERM_WEIGHT = 0.15
 _EXTRACTIVE_SENTENCES = 3
 _MIN_SUPPORTED_WORDS = 0.6
+_FOLLOW_UP_MAX_WORDS = 7
+_FOLLOW_UP_WORDS = frozenset(
+    "it its they them their that this these those he she his her".split()
+)
 _WORD = re.compile(r"[^\W\d_]{3,}")
 _CITATION = re.compile(r"\[\s*S(\d+)\s*\]")
 _INJECTION = re.compile(
@@ -98,6 +102,15 @@ def _content_words(text: str) -> set[str]:
     return {w for w in _WORD.findall(text.lower()) if w not in ENGLISH_STOP_WORDS}
 
 
+def _retrieval_query(question: str, history: Sequence[str]) -> str:
+    """Add the previous question to a short follow-up such as "what caused it?"."""
+    words = question.lower().split()
+    is_follow_up = len(words) <= _FOLLOW_UP_MAX_WORDS and _FOLLOW_UP_WORDS & {
+        word.strip("?.,!") for word in words
+    }
+    return f"{history[-1]} {question}" if history and is_follow_up else question
+
+
 def _rerank(hits: Sequence[RetrievedChunk], question: str) -> list[RetrievedChunk]:
     """Nudge chunks that contain the question's own words above near-ties."""
     terms = _content_words(question)
@@ -143,23 +156,29 @@ class QuestionAnswerer:
         self,
         question: str,
         document_ids: Iterable[str] | None = None,
+        history: Sequence[str] = (),
         model: str | None = None,
         use_llm: bool = True,
     ) -> Answer:
-        """Answer ``question`` from evidence retrieved for it."""
+        """Answer ``question``. ``history`` holds earlier questions, newest last.
+
+        Earlier answers are deliberately left out of the prompt, so every answer rests
+        only on evidence retrieved for it.
+        """
         question = question.strip()
         if not question:
             return Answer(question, "Please enter a question.", GenerationMethod.NONE)
 
         ids = None if document_ids is None else list(document_ids)
         notices: list[str] = []
+        query = _retrieval_query(question, history)
         semantic = True
         try:
-            hits = self._retriever.retrieve(question, ids)
+            hits = self._retriever.retrieve(query, ids)
         except EmbeddingModelError as exc:
             semantic = False
             notices.append(f"Semantic search is unavailable, so keyword search was used. {exc}")
-            hits = self._keyword_search(question, ids)
+            hits = self._keyword_search(query, ids)
         if not hits:
             return Answer(question, NO_EVIDENCE_TEXT, GenerationMethod.NONE, notices=tuple(notices))
 

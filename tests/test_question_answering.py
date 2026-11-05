@@ -209,3 +209,16 @@ def test_missing_embedding_model_uses_keyword_search(db, store, test_settings) -
 def test_blank_question(make, cats) -> None:
     answerer, llm = make()
     assert answerer.ask("   ", model="m").has_evidence is False and llm.prompts == []
+
+
+def test_follow_up_question_uses_the_previous_one_for_search(make, cats) -> None:
+    answerer, llm = make()
+    answer = answerer.ask("Tell me about it", history=[QUESTION], model="m")
+    assert answer.has_evidence
+    assert "previous" not in llm.prompts[0]
+
+
+def test_earlier_answers_are_not_treated_as_evidence(make, cats) -> None:
+    answerer, llm = make()
+    answerer.ask(QUESTION, history=["An earlier question about penguins"], model="m")
+    assert "penguins" not in llm.prompts[0]
