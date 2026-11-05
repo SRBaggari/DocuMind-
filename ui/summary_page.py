@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from core.exporter import safe_filename
 from core.extractive import GenerationMethod
 from core.summarizer import Summarizer, SummaryError, SummaryMode
 from database.db_manager import DatabaseManager
@@ -57,8 +58,7 @@ def render(db: DatabaseManager, summarizer: Summarizer, model: str | None) -> No
     for section in summary.sections:
         st.markdown(f"#### {section.title}")
         st.markdown(section.content)
-    st.download_button(
-        "Download as Markdown",
-        summary.to_markdown(),
-        file_name=f"{summary.filename}-{summary.mode.value}-summary.md",
-    )
+    name = f"{safe_filename(summary.filename)}-{summary.mode.value}-summary"
+    left, right = st.columns(2)
+    left.download_button("Download as Markdown", summary.to_markdown(), file_name=f"{name}.md")
+    right.download_button("Download as text", summary.to_text(), file_name=f"{name}.txt")
