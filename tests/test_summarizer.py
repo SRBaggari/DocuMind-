@@ -74,6 +74,43 @@ def test_document_text_cannot_close_its_data_tag(db, test_settings, indexed_inge
     assert llm.prompts[0].count("</document>") == 1
 
 
+def test_long_document_is_summarized_in_parts(db, test_settings, indexed_ingestor) -> None:
+    body = "\n\n".join(f"Paragraph {n} says fact number {n} about the subject. " * 40 for n in range(60))
+    doc = indexed_ingestor.ingest("long.txt", body.encode()).document
+    llm = FakeLLM(lambda prompt: "Notes on this part. " * 10)
+    seen: list[float] = []
+    summary = summarizer_with(db, test_settings, llm).summarize(
+        doc.document_id, SummaryMode.QUICK, model="m", progress=seen.append
+    )
+    limit = test_settings.ollama.summary_input_tokens
+    assert len(llm.prompts) > 3
+    assert all(len(prompt) / 4 < limit * 1.5 for prompt in llm.prompts)
+    assert "notes on a document" in llm.prompts[-1]
+    assert seen[-1] == 1.0 and summary.method is GenerationMethod.LLM
+
+
+def test_oversized_notes_are_reduced_in_rounds(db, test_settings, indexed_ingestor) -> None:
+    body = "\n\n".join(f"Paragraph {n} says fact {n} about things. " * 40 for n in range(60))
+    doc = indexed_ingestor.ingest("long.txt", body.encode()).document
+
+    def reply(prompt: str) -> str:
+        return "short note" if "earlier notes" in prompt else "long note words " * 200
+
+    llm = FakeLLM(reply)
+    summarizer_with(db, test_settings, llm).summarize(doc.document_id, SummaryMode.QUICK, model="m")
+    assert any("earlier notes" in prompt for prompt in llm.prompts)
+
+
+def test_pdf_notes_are_labelled_with_page_ranges(
+    db, test_settings, indexed_ingestor, make_pdf
+) -> None:
+    pages = [f"Page {n} content sentence. " * 24 for n in range(1, 40)]
+    doc = indexed_ingestor.ingest("a.pdf", make_pdf(pages).read_bytes()).document
+    llm = FakeLLM("notes")
+    summarizer_with(db, test_settings, llm).summarize(doc.document_id, SummaryMode.QUICK, model="m")
+    assert "(pages 1-" in llm.prompts[0]
+
+
 @pytest.mark.parametrize(
     "error", [OllamaUnavailableError("down"), OllamaModelNotFoundError("no model")]
 )
