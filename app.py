@@ -29,10 +29,12 @@ from ui import (
     upload_page,
 )
 from ui import components as ui
+from utils.instance_lock import AlreadyRunningError, acquire_instance_lock
 from utils.logging_config import configure_logging
 
-_STATUS_TTL_SECONDS = 15
+_STATUS_TTL_SECONDS = 60
 _DEFAULT_PAGE = "dashboard"
+_LOCK_FILENAME = "documind.lock"
 _SIDEBAR_TAGLINE = "Local document intelligence"
 # A local file, because Streamlit fetches Material and emoji page icons from a web server.
 _PAGE_ICON = PROJECT_ROOT / "assets" / "favicon.png"
@@ -63,6 +65,7 @@ _SIDEBAR_PARENT = {"upload": "documents"}
 def get_services() -> ui.Services:
     """Create the shared services once per server process."""
     ensure_directories(settings.paths)
+    acquire_instance_lock(settings.paths.data_dir / _LOCK_FILENAME)
     configure_logging(settings.paths.logs_dir)
     db = DatabaseManager(settings.paths.database_path)
     store = VectorStore(settings.paths.indexes_dir, settings.embedding.dimension)
@@ -71,6 +74,7 @@ def get_services() -> ui.Services:
     ingestor = DocumentIngestor(db, settings, indexer)
     ingestor.recover_interrupted()
     indexer.reconcile()
+    ingestor.sweep_orphans(include_temp=True)
     ollama = OllamaClient(settings.ollama)
     retriever = Retriever(db, store, engine, indexer, settings.retrieval)
     return ui.Services(
@@ -93,11 +97,16 @@ def get_ollama_status() -> OllamaStatus:
 
 
 def choose_model(db: DatabaseManager, status: OllamaStatus) -> str | None:
-    """Return the saved model if it is usable, then the default. None means extractive."""
+    """Return the model to use, so AI answers work as soon as a model is installed.
+
+    The order is the saved choice, the default, the tested models, then any installed
+    model. None means extractive mode, which is also what choosing it in Settings gives.
+    """
     saved = db.get_setting(settings_page.MODEL_SETTING)
     if saved == settings_page.EXTRACTIVE_CHOICE:
         return None
-    for candidate in (saved, settings.ollama.default_model):
+    config = settings.ollama
+    for candidate in (saved, config.default_model, *config.preferred_models, *status.models):
         if candidate in status.models:
             return candidate
     return None
@@ -130,7 +139,14 @@ def render_sidebar(page: str, model: str | None) -> None:
 def main() -> None:
     st.set_page_config(page_title=APP_NAME, page_icon=str(_PAGE_ICON), layout="wide")
     ui.inject_styles()
-    services = get_services()
+    try:
+        services = get_services()
+    except AlreadyRunningError:
+        st.error(
+            "DocuMind is already running on this computer. Use that browser tab, or close "
+            "the other DocuMind window and reload this page."
+        )
+        st.stop()
     status = get_ollama_status()
     model = choose_model(services.db, status)
     page = current_page()

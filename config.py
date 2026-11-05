@@ -160,12 +160,14 @@ class RetrievalConfig:
 class OllamaConfig:
     base_url: str = field(
         default_factory=lambda: validate_local_url(
-            os.environ.get("DOCUMIND_OLLAMA_URL", "http://localhost:11434")
+            os.environ.get("DOCUMIND_OLLAMA_URL", "http://127.0.0.1:11434")
         )
     )
     default_model: str = field(
         default_factory=lambda: os.environ.get("DOCUMIND_OLLAMA_MODEL", "qwen2.5:3b")
     )
+    # Used in this order when the default model is not installed. gemma3:4b tested best.
+    preferred_models: tuple[str, ...] = ("gemma3:4b", "llama3.2:3b", "qwen3:4b")
     temperature: float = 0.2
     max_output_tokens: int = 768
     # Extra output allowed for a thinking model's reasoning, which is thrown away.
