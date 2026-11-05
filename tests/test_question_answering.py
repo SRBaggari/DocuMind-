@@ -56,6 +56,25 @@ def test_no_evidence_means_the_model_is_never_called(make, cats) -> None:
     assert llm.prompts == [] and answer.sources == ()
 
 
+def test_broad_question_uses_the_closest_passages_and_says_so(make, cats) -> None:
+    answerer, llm = make()
+    answer = answerer.ask("What are the important findings?", model="m")
+    assert answer.has_evidence and llm.prompts
+    assert any("broad question" in notice for notice in answer.notices)
+
+
+def test_broad_question_still_needs_a_document(make) -> None:
+    answerer, llm = make()
+    assert not answerer.ask("What are the main objectives?", model="m").has_evidence
+    assert llm.prompts == []
+
+
+def test_a_subject_word_keeps_the_relevance_floor(make, cats) -> None:
+    answerer, llm = make()
+    answer = answerer.ask("What are the main findings about quantum chromodynamics?", model="m")
+    assert not answer.has_evidence and llm.prompts == []
+
+
 def test_no_documents_at_all(make) -> None:
     answerer, llm = make()
     assert answerer.ask(QUESTION, model="m").text == NO_EVIDENCE_TEXT

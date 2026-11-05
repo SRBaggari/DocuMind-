@@ -50,6 +50,17 @@ _FOLLOW_UP_MAX_WORDS = 7
 _FOLLOW_UP_WORDS = frozenset(
     "it its they them their that this these those he she his her".split()
 )
+# Words that ask about a document as a whole, not about any subject in it.
+_BROAD_WORDS = frozenset(
+    """aim aims approach conclusion conclusions document documents explain finding findings
+    goal goals important key limitation limitations main mentioned method methodology methods
+    objective objectives outcome outcomes overall paper purpose recommendation recommendations
+    report research result results study summarize summary takeaway takeaways used""".split()
+)
+_BROAD_FLOOR = 0.0
+_BROAD_NOTICE = (
+    "This is a broad question, so the closest passages were used even if none matches strongly."
+)
 _WORD = re.compile(r"[^\W\d_]{3,}")
 _CITATION = re.compile(r"\[\s*S(\d+)\s*\]")
 _SOURCE_TAG = re.compile(r"</?\s*(source|question)\b[^>\n]*>?", re.IGNORECASE)
@@ -95,6 +106,16 @@ class Answer:
 
 def _content_words(text: str) -> set[str]:
     return {w for w in _WORD.findall(text.lower()) if w not in ENGLISH_STOP_WORDS}
+
+
+def _is_broad(question: str) -> bool:
+    """Say whether a question is about the document as a whole, like "what are the findings?".
+
+    Such a question shares few words with any passage, so it can score below the relevance
+    floor even when the document answers it. Any subject word makes it a normal question.
+    """
+    words = _content_words(question)
+    return bool(words) and words <= _BROAD_WORDS
 
 
 def _retrieval_query(question: str, history: Sequence[str]) -> str:
@@ -154,7 +175,12 @@ class QuestionAnswerer:
         query = _retrieval_query(question, history)
         semantic = True
         try:
-            hits = self._retriever.retrieve(query, ids)
+            broad = _is_broad(question)
+            hits = self._retriever.retrieve(
+                query, ids, min_similarity=_BROAD_FLOOR if broad else None
+            )
+            if broad and hits:
+                notices.append(_BROAD_NOTICE)
         except EmbeddingModelError as exc:
             semantic = False
             notices.append(f"Semantic search is unavailable, so keyword search was used. {exc}")
