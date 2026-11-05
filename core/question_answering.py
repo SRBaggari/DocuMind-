@@ -265,6 +265,8 @@ class QuestionAnswerer:
             return ""
 
         text = _CITATION.sub(check, reply).strip()
+        if not _CITATION.sub("", text).strip():
+            raise OllamaError("The local model returned a citation without an answer.")
         checked = tuple(replace(source, cited=source.label in cited) for source in sources)
         if not cited:
             notices.append("The model did not cite a source, so check this against the evidence.")

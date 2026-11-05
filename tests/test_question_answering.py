@@ -68,6 +68,14 @@ def test_model_saying_not_found_is_reported_as_no_evidence(make, cats) -> None:
     assert answer.text == NO_EVIDENCE_TEXT and answer.has_evidence is False
 
 
+@pytest.mark.parametrize("reply", ["[S1]", "[S9]"])
+def test_citation_without_an_answer_falls_back(make, cats, reply) -> None:
+    answerer, _ = make(reply)
+    answer = answerer.ask(QUESTION, model="m")
+    assert answer.method is GenerationMethod.EXTRACTIVE
+    assert any("citation without an answer" in notice for notice in answer.notices)
+
+
 def test_invented_citation_is_removed(make, cats) -> None:
     answerer, _ = make("They sleep on warm sofas [S1] and beds [S9].")
     answer = answerer.ask(QUESTION, model="m")
