@@ -15,6 +15,11 @@ _ABBREVIATIONS = frozenset(
     "al approx co corp dept dr e.g etc fig i.e inc jr ltd mr mrs ms no prof sr st vs".split()
 )
 _NUMBER = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?")
+_INJECTION = re.compile(
+    r"\b(ignore|disregard|forget|override)\b.{0,40}\b(instructions?|rules?|prompts?|above|"
+    r"previous)\b|\byou are now\b|\bsystem prompt\b|\bnew instructions?\b",
+    re.IGNORECASE,
+)
 # Typical subword tokens per English word, and characters per token for unspaced text.
 _TOKENS_PER_WORD = 1.3
 _CHARS_PER_TOKEN = 4
@@ -63,8 +68,14 @@ def split_sentences(text: str) -> list[str]:
     return sentences
 
 
-def _numbers(text: str) -> set[str]:
+def extract_numbers(text: str) -> set[str]:
+    """Return the figures in ``text`` in one form, so "1,206" and "1206" are equal."""
     return {match.replace(",", "").rstrip(".") for match in _NUMBER.findall(text)}
+
+
+def mask_numbers(text: str) -> str:
+    """Hide figures, so sentences that differ only in their numbers look identical."""
+    return _NUMBER.sub("#", text)
 
 
 def unverified_numbers(generated: str, source: str) -> list[str]:
@@ -73,5 +84,20 @@ def unverified_numbers(generated: str, source: str) -> list[str]:
     Single digits are skipped, because models use them for list items and for
     numbers the source spells out.
     """
-    known = _numbers(source)
-    return sorted(n for n in _numbers(generated) - known if len(n) > 1)
+    known = extract_numbers(source)
+    return sorted(n for n in extract_numbers(generated) - known if len(n) > 1)
+
+
+def strip_instructions(text: str) -> tuple[str, bool]:
+    """Remove sentences that look like commands to the model, however they are phrased."""
+    removed = False
+    lines = []
+    for line in text.split("\n"):
+        kept = []
+        for sentence in split_sentences(line):
+            if _INJECTION.search(sentence):
+                removed = True
+            else:
+                kept.append(sentence)
+        lines.append(" ".join(kept))
+    return "\n".join(lines), removed

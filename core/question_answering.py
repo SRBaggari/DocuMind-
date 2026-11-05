@@ -30,7 +30,7 @@ from core.ollama_client import LocalLLM, OllamaError
 from core.retriever import RetrievedChunk, Retriever
 from database.db_manager import DatabaseManager
 from database.schema import DocumentStatus
-from utils.text_utils import estimate_tokens, split_sentences, unverified_numbers
+from utils.text_utils import estimate_tokens, strip_instructions, unverified_numbers
 
 logger = logging.getLogger("documind.qa")
 
@@ -52,11 +52,6 @@ _FOLLOW_UP_WORDS = frozenset(
 )
 _WORD = re.compile(r"[^\W\d_]{3,}")
 _CITATION = re.compile(r"\[\s*S(\d+)\s*\]")
-_INJECTION = re.compile(
-    r"\b(ignore|disregard|forget|override)\b.{0,40}\b(instructions?|rules?|prompts?|above|"
-    r"previous)\b|\byou are now\b|\bsystem prompt\b|\bnew instructions?\b",
-    re.IGNORECASE,
-)
 _SOURCE_TAG = re.compile(r"</?\s*(source|question)\b[^>\n]*>?", re.IGNORECASE)
 
 _SYSTEM_PROMPT = f"""You answer questions using only the numbered sources provided.
@@ -120,21 +115,6 @@ def _rerank(hits: Sequence[RetrievedChunk], question: str) -> list[RetrievedChun
         return hit.score + _RERANK_TERM_WEIGHT * coverage
 
     return sorted(hits, key=rank, reverse=True)
-
-
-def _strip_instructions(text: str) -> tuple[str, bool]:
-    """Remove sentences that look like commands to the model, however they are phrased."""
-    removed = False
-    lines = []
-    for line in text.split("\n"):
-        kept = []
-        for sentence in split_sentences(line):
-            if _INJECTION.search(sentence):
-                removed = True
-            else:
-                kept.append(sentence)
-        lines.append(" ".join(kept))
-    return _SOURCE_TAG.sub(" ", "\n".join(lines)), removed
 
 
 class QuestionAnswerer:
@@ -220,7 +200,8 @@ class QuestionAnswerer:
         used = 0
         injected = False
         for hit, source in zip(hits, sources):
-            text, removed = _strip_instructions(hit.text)
+            text, removed = strip_instructions(hit.text)
+            text = _SOURCE_TAG.sub(" ", text)
             injected = injected or removed
             size = estimate_tokens(text)
             if blocks and used + size > budget:
