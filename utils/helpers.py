@@ -31,6 +31,17 @@ def format_size(size_bytes: int) -> str:
     return f"{size:.1f} GB"
 
 
+def format_timestamp(iso_timestamp: str) -> str:
+    """Show a stored UTC timestamp in the computer's local time."""
+    moment = datetime.fromisoformat(iso_timestamp).astimezone()
+    return f"{moment.day} {moment:%b %Y, %H:%M}"
+
+
+def directory_size(path: Path) -> int:
+    """Return the total size of the files under ``path``, or 0 if it does not exist."""
+    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+
 def atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write ``data`` so that ``path`` never holds a partial file after a crash."""
     path.parent.mkdir(parents=True, exist_ok=True)
