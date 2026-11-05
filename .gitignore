@@ -16,6 +16,7 @@ data/processed/*
 data/indexes/*
 data/*.db
 data/*.db-*
+data/*.lock
 !data/uploads/.gitkeep
 !data/processed/.gitkeep
 !data/indexes/.gitkeep
