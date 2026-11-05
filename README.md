@@ -2,7 +2,7 @@
 
 DocuMind is a standalone application for understanding documents: upload PDF, DOCX or TXT files, then summarize them, ask questions, extract key information and compare them. All AI processing runs on your own computer. It needs no API keys or cloud accounts.
 
-> **Status: Phase 5 (comparison and insights).** Upload, search, summaries, document chat, comparison, insights, charts and exports work, with a local LLM through Ollama or without one. The pages are functional until Phase 6 replaces their design. The full README is written in Phase 8.
+> **Status: Phase 6 (interface).** Every page works and is connected to the real backend, with a local LLM through Ollama or without one. Open Settings to choose a local model. The full README is written in Phase 8.
 
 ## Architecture
 
@@ -42,6 +42,7 @@ config.py   Every setting. Any layer may import it.
 | `database/schema.py` | Table definitions and schema version |
 | `database/db_manager.py` | Connections, migrations and all metadata reads and writes |
 | `ui/*.py` | One module per page, plus shared `components.py` and `charts.py` |
+| `assets/styles.css` | Interface styles. Theme colors and fonts are in `.streamlit/config.toml` |
 | `utils/file_validation.py` | Extension, size and file signature checks; safe storage paths |
 | `utils/text_utils.py` | Sentence splitting and token estimation |
 | `utils/logging_config.py` | Rotating local log files |
@@ -93,6 +94,8 @@ A document whose text was extracted but could not be indexed, for example becaus
 - **Topic presence comes from terms, not chunks.** The same text splits differently as a PDF and a TXT, so a topic counts as present in a document when most of its terms appear there.
 - **Stored embeddings are reused.** Comparison reads each document's saved vectors and never embeds a document again.
 - **Exports are hardened.** CSV cells that a spreadsheet would run as formulas are neutralized, and document text is escaped before it reaches the PDF builder.
+- **Broad questions have their own path.** "What are the main findings?" shares few words with any passage, so it can score below the relevance floor even when the document answers it. A question made only of document-structure words therefore uses the closest passages, and the answer says so. Any subject word keeps the normal floor.
+- **The browser never contacts another server.** Document and model text can contain Markdown images, and a browser would fetch them from their URL, which could carry document text away. All such text is sanitized or escaped, and HTML stays on one line, because a blank line would end the HTML block and turn the rest into Markdown. Fonts are system fonts, and the page icon is a local file because Streamlit fetches its Material and emoji icons from the web. A headless browser run through every page recorded no outside requests.
 - **Ollama is restricted to loopback.** `config.py` rejects any Ollama URL that does not point at this machine.
 - **Streamlit telemetry is off** and the server binds to `localhost` (see `.streamlit/config.toml`).
 
