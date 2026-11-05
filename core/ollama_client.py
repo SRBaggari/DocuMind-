@@ -2,19 +2,39 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 import requests
 
 from config import OllamaConfig
 
+logger = logging.getLogger("documind.ollama")
+
 INSTALL_HELP = (
     "Install Ollama from https://ollama.com/download, start it, then download a model "
     "with: ollama pull qwen2.5:3b"
 )
+
+
+class OllamaError(Exception):
+    """Generation failed. The message is safe to show to the user."""
+
+
+class OllamaUnavailableError(OllamaError):
+    pass
+
+
+class OllamaModelNotFoundError(OllamaError):
+    pass
+
+
+class OllamaTimeoutError(OllamaError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -33,6 +53,19 @@ class OllamaStatus:
         if self.installed:
             return "Ollama is installed but not running. Start the Ollama app."
         return f"Ollama is not installed. {INSTALL_HELP}"
+
+
+class LocalLLM(Protocol):
+    def status(self) -> OllamaStatus: ...
+
+    def generate(
+        self,
+        system: str,
+        prompt: str,
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> str: ...
 
 
 def _is_installed() -> bool:
@@ -70,3 +103,65 @@ class OllamaClient:
         except (requests.RequestException, ValueError, KeyError):
             return OllamaStatus(installed=installed, running=False)
         return OllamaStatus(installed=True, running=True, version=version, models=models)
+
+    def generate(
+        self,
+        system: str,
+        prompt: str,
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
+        """Return the model's reply, raising OllamaError if there is no usable one."""
+        config = self._config
+        body = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+            "options": {
+                "temperature": config.temperature if temperature is None else temperature,
+                "num_predict": max_tokens or config.max_output_tokens,
+                "num_ctx": config.context_window_tokens,
+            },
+        }
+        try:
+            response = self._post_chat(body)
+        except requests.ConnectTimeout as exc:
+            raise OllamaUnavailableError(
+                "Could not reach Ollama on this computer. Check that it is running."
+            ) from exc
+        except requests.Timeout as exc:
+            raise OllamaTimeoutError(
+                f"The local model took longer than {config.generate_timeout_seconds:.0f} "
+                "seconds to reply."
+            ) from exc
+        except requests.RequestException as exc:
+            raise OllamaUnavailableError(
+                "Could not reach Ollama on this computer. Check that it is running."
+            ) from exc
+
+        if response.status_code == 404:
+            raise OllamaModelNotFoundError(
+                f"The model {model} is not installed. Run: ollama pull {model}"
+            )
+        if response.status_code != 200:
+            logger.warning("Ollama returned status %d", response.status_code)
+            raise OllamaError(f"Ollama returned an error (status {response.status_code}).")
+        try:
+            content = response.json()["message"]["content"]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise OllamaError("Ollama returned a reply that could not be read.") from exc
+        content = content.strip()
+        if not content:
+            raise OllamaError("The local model returned an empty reply.")
+        return content
+
+    def _post_chat(self, body: dict) -> requests.Response:
+        return self._session.post(
+            f"{self._config.base_url}/api/chat",
+            json=body,
+            timeout=(self._config.connect_timeout_seconds, self._config.generate_timeout_seconds),
+        )

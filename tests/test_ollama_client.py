@@ -11,7 +11,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from config import OllamaConfig, validate_local_url
-from core.ollama_client import OllamaClient
+from core.ollama_client import (
+    OllamaClient,
+    OllamaError,
+    OllamaModelNotFoundError,
+    OllamaTimeoutError,
+    OllamaUnavailableError,
+)
 
 
 class FakeOllama(BaseHTTPRequestHandler):
@@ -70,6 +76,59 @@ def test_status_lists_models(server) -> None:
     assert status.running and status.version == "9.9"
     assert status.models == ("alpha:1b", "beta:3b")
     assert "2 model(s)" in status.message
+
+
+def test_generate_sends_settings_and_returns_text(server) -> None:
+    client = client_for(server)
+    assert client.generate("sys", "hi", "alpha:1b", temperature=0.5, max_tokens=7) == "Hello"
+    body = server.last_request
+    assert body["model"] == "alpha:1b" and body["stream"] is False
+    assert body["options"]["temperature"] == 0.5 and body["options"]["num_predict"] == 7
+    assert [m["role"] for m in body["messages"]] == ["system", "user"]
+
+
+def test_default_temperature_and_output_limit_come_from_config(server) -> None:
+    client_for(server, temperature=0.1, max_output_tokens=33).generate("s", "p", "m")
+    assert server.last_request["options"]["temperature"] == 0.1
+    assert server.last_request["options"]["num_predict"] == 33
+
+
+def test_missing_model(server) -> None:
+    server.chat_status = 404
+    with pytest.raises(OllamaModelNotFoundError, match="ollama pull alpha:1b"):
+        client_for(server).generate("s", "p", "alpha:1b")
+
+
+def test_server_error(server) -> None:
+    server.chat_status = 500
+    with pytest.raises(OllamaError, match="500"):
+        client_for(server).generate("s", "p", "m")
+
+
+def test_timeout(server) -> None:
+    server.delay = 1.0
+    with pytest.raises(OllamaTimeoutError, match="longer than"):
+        client_for(server, generate_timeout_seconds=0.1).generate("s", "p", "m")
+
+
+def test_empty_reply_is_an_error(server) -> None:
+    server.chat_body = {"message": {"content": "  "}}
+    with pytest.raises(OllamaError, match="empty"):
+        client_for(server).generate("s", "p", "m")
+
+
+def test_unreadable_reply_is_an_error(server) -> None:
+    server.chat_body = {"unexpected": True}
+    with pytest.raises(OllamaError, match="could not be read"):
+        client_for(server).generate("s", "p", "m")
+
+
+def test_service_down() -> None:
+    client = OllamaClient(OllamaConfig(base_url="http://127.0.0.1:9", connect_timeout_seconds=0.5))
+    status = client.status()
+    assert status.running is False and status.models == ()
+    with pytest.raises(OllamaUnavailableError):
+        client.generate("s", "p", "m")
 
 
 def test_remote_urls_are_refused() -> None:
