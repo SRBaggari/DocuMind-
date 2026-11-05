@@ -7,7 +7,12 @@ import pymupdf
 import pytest
 from conftest import FakeLLM
 
-from core.document_comparator import _match_passages, shingle_overlap
+from core.document_comparator import (
+    DifferenceKind,
+    _match_passages,
+    shingle_overlap,
+    statement_differences,
+)
 from core.extractive import Sentence
 from core.keyword_extractor import document_similarity
 from core.ollama_client import OllamaUnavailableError
@@ -38,6 +43,10 @@ GARDENING = (
 )
 
 
+def sentence(text: str, page: int | None = 1, position: int = 0) -> Sentence:
+    return Sentence(text, page, position)
+
+
 def test_shingle_overlap_values() -> None:
     assert shingle_overlap("a b c d e f", "a b c d e f") == 1.0
     assert shingle_overlap("a b c d e f", "a b c d e g") == pytest.approx(1 / 3)
@@ -47,6 +56,41 @@ def test_shingle_overlap_values() -> None:
 
 def test_document_similarity_of_empty_text() -> None:
     assert document_similarity("", "") == 0.0
+
+
+def test_negation_counts_as_a_difference() -> None:
+    found = statement_differences(
+        [sentence("The audit found the accounts were accurate this year.")],
+        [sentence("The audit found the accounts were not accurate this year.")],
+        0.7,
+        10,
+    )
+    assert found[0].kind is DifferenceKind.WORDING and found[0].only_b == ("not",)
+
+
+def test_figures_are_compared_in_one_form() -> None:
+    assert statement_differences(
+        [sentence("Crews repaired 1,206 leaks in the network this year.")],
+        [sentence("Crews repaired 1206 leaks in the network this year.")],
+        0.7,
+        10,
+    ) == ()
+
+
+def test_each_sentence_is_paired_once() -> None:
+    found = statement_differences(
+        [sentence("Revenue reached 10 dollars."), sentence("Revenue reached 20 dollars.")],
+        [sentence("Revenue reached 30 dollars.")],
+        0.7,
+        10,
+    )
+    assert len(found) == 1
+
+
+def test_list_limit_is_applied() -> None:
+    left = [sentence(f"Station {w} recorded 1 fault today.", 1, i) for i, w in enumerate("abcdef")]
+    right = [sentence(f"Station {w} recorded 2 faults today.", 1, i) for i, w in enumerate("abcdef")]
+    assert len(statement_differences(left, right, 0.5, 3)) == 3
 
 
 def test_matching_in_blocks_equals_the_full_matrix(monkeypatch) -> None:

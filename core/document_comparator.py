@@ -219,3 +219,89 @@ def _match_passages(a: np.ndarray, b: np.ndarray, cells: int) -> _Matches:
         pooled = np.maximum.reduceat(block, column_starts, axis=1)
         np.maximum.at(grid, (np.arange(start, stop) * grid_rows) // rows, pooled)
     return _Matches(best_a, match_a, best_b, grid)
+
+
+def _masked_words(text: str) -> list[str]:
+    return _WORD.findall(mask_numbers(text).lower())
+
+
+def _changed_words(text_a: str, text_b: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    left, right = text_a.split(), text_b.split()
+    only_a: list[str] = []
+    only_b: list[str] = []
+    matcher = difflib.SequenceMatcher(None, left, right, autojunk=False)
+    for tag, a0, a1, b0, b1 in matcher.get_opcodes():
+        if tag != "equal":
+            if a1 > a0:
+                only_a.append(" ".join(left[a0:a1]))
+            if b1 > b0:
+                only_b.append(" ".join(right[b0:b1]))
+    return tuple(only_a), tuple(only_b)
+
+
+def statement_differences(
+    sentences_a: Sequence[Sentence],
+    sentences_b: Sequence[Sentence],
+    threshold: float,
+    limit: int,
+) -> tuple[StatementDifference, ...]:
+    """Pair sentences that make the same statement, and report those that differ.
+
+    Figures are hidden while pairing, so "rose 3%" and "rose 5%" pair as one statement.
+    Stop words are kept, because "not" can reverse a statement.
+    """
+    if not sentences_a or not sentences_b:
+        return ()
+    masked = [mask_numbers(s.text) for s in (*sentences_a, *sentences_b)]
+    try:
+        matrix = TfidfVectorizer(token_pattern=r"(?u)\b\w+\b").fit_transform(masked)
+    except ValueError:
+        return ()
+    left, right = matrix[: len(sentences_a)], matrix[len(sentences_a) :]
+
+    pairs: list[tuple[float, int, int]] = []
+    for start in range(0, left.shape[0], _BLOCK_ROWS):
+        block = (left[start : start + _BLOCK_ROWS] @ right.T).toarray()
+        partners = block.argmax(axis=1)
+        scores = block[np.arange(len(block)), partners]
+        pairs += [
+            (float(score), start + row, int(partner))
+            for row, (score, partner) in enumerate(zip(scores, partners))
+            if score >= threshold
+        ]
+
+    numeric: list[StatementDifference] = []
+    wording: list[StatementDifference] = []
+    used: set[int] = set()
+    for _, index_a, index_b in sorted(pairs, key=lambda pair: -pair[0]):
+        if index_b in used:
+            continue
+        used.add(index_b)
+        a, b = sentences_a[index_a], sentences_b[index_b]
+        numbers_a, numbers_b = extract_numbers(a.text), extract_numbers(b.text)
+        if numbers_a != numbers_b:
+            numeric.append(
+                StatementDifference(
+                    DifferenceKind.NUMERIC,
+                    a.text,
+                    a.page_number,
+                    b.text,
+                    b.page_number,
+                    tuple(sorted(numbers_a - numbers_b)),
+                    tuple(sorted(numbers_b - numbers_a)),
+                )
+            )
+        elif _masked_words(a.text) != _masked_words(b.text):
+            only_a, only_b = _changed_words(a.text, b.text)
+            wording.append(
+                StatementDifference(
+                    DifferenceKind.WORDING,
+                    a.text,
+                    a.page_number,
+                    b.text,
+                    b.page_number,
+                    only_a,
+                    only_b,
+                )
+            )
+    return tuple([*numeric, *wording][:limit])
