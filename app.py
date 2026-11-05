@@ -49,9 +49,7 @@ _PAGES: dict[str, Callable[[ui.AppContext], None]] = {
     "dashboard": dashboard.render,
     "documents": library_page.render,
     "upload": upload_page.render,
-    "summarize": lambda ctx: summary_page.render(
-        ctx.db, ctx.services.summarizer, ctx.model
-    ),
+    "summarize": summary_page.render,
     "ask": lambda ctx: chat_page.render(ctx.db, ctx.services.answerer, ctx.model),
     "compare": lambda ctx: comparison_page.render(
         ctx.db, ctx.services.comparator, ctx.model

@@ -1,4 +1,4 @@
-"""Summarization page. A functional page for Phase 4; Phase 6 replaces its layout."""
+"""Summarization page."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ import streamlit as st
 
 from core.exporter import safe_filename
 from core.extractive import GenerationMethod
-from core.summarizer import Summarizer, SummaryError, SummaryMode
-from database.db_manager import DatabaseManager
+from core.summarizer import Summary, SummaryError, SummaryMode
 from database.schema import DocumentStatus
+from ui import components as ui
 
 _RESULT_KEY = "summary_result"
 _MODE_LABELS = {
@@ -18,30 +18,68 @@ _MODE_LABELS = {
 }
 
 
-def render(db: DatabaseManager, summarizer: Summarizer, model: str | None) -> None:
-    st.subheader("Summarize a document")
-    documents = db.list_by_status(DocumentStatus.READY)
-    if not documents:
-        st.caption("Upload a document first.")
-        return
-    names = {doc.document_id: doc.original_filename for doc in documents}
-    document_id = st.selectbox("Document", list(names), format_func=names.get)
-    mode = st.radio(
-        "Summary type",
-        list(SummaryMode),
-        format_func=_MODE_LABELS.get,
-        horizontal=True,
+def _show(summary: Summary) -> None:
+    llm = summary.method is GenerationMethod.LLM
+    ui.pill(f"Local LLM: {summary.model}" if llm else "Extractive NLP", "accent" if llm else "warn")
+    st.caption(summary.method_label)
+    for notice in summary.notices:
+        st.warning(ui.safe_markdown(notice))
+    for index, section in enumerate(summary.sections):
+        with ui.card(f"section-{index}"):
+            ui.section_title(section.title)
+            st.markdown(ui.safe_markdown(section.content))
+    name = f"{safe_filename(summary.filename)}-{summary.mode.value}-summary"
+    left, right, _ = st.columns([1, 1, 2])
+    left.download_button(
+        "Download Markdown",
+        summary.to_markdown(),
+        file_name=f"{name}.md",
+        icon=":material/download:",
+        width="stretch",
+    )
+    right.download_button(
+        "Download text",
+        summary.to_text(),
+        file_name=f"{name}.txt",
+        icon=":material/download:",
+        width="stretch",
     )
 
-    if st.button("Generate summary", type="primary"):
-        progress = st.progress(0.0, text="Summarizing")
+
+def render(ctx: ui.AppContext) -> None:
+    ui.page_header("Summarization", "Create a quick, detailed or executive summary.")
+    documents = ctx.db.list_by_status(DocumentStatus.READY)
+    if not documents:
+        ui.no_documents()
+        return
+    ui.extractive_notice(ctx)
+
+    with ui.card("controls"):
+        left, right = st.columns([3, 2], vertical_alignment="bottom")
+        with left:
+            document_id = ui.document_select("Document", documents, "summary_document")
+        mode = right.segmented_control(
+            "Summary type",
+            list(SummaryMode),
+            default=SummaryMode.QUICK,
+            format_func=_MODE_LABELS.get,
+            key="summary_mode",
+        ) or SummaryMode.QUICK
+        generate = st.button("Generate summary", type="primary", icon=":material/auto_awesome:")
+
+    if generate:
+        progress = st.progress(0.0, text="Summarizing. Long documents can take several minutes.")
         try:
-            st.session_state[_RESULT_KEY] = summarizer.summarize(
+            summary = ctx.services.summarizer.summarize(
                 document_id,
                 mode,
-                model=model,
-                use_llm=model is not None,
+                model=ctx.model,
+                use_llm=ctx.model is not None,
                 progress=lambda share: progress.progress(share, text="Summarizing"),
+            )
+            st.session_state[_RESULT_KEY] = summary
+            ctx.db.log_activity(
+                "summary", f"Summarized {summary.filename} ({mode.value})", document_id
             )
         except SummaryError as exc:
             st.session_state.pop(_RESULT_KEY, None)
@@ -49,16 +87,5 @@ def render(db: DatabaseManager, summarizer: Summarizer, model: str | None) -> No
         progress.empty()
 
     summary = st.session_state.get(_RESULT_KEY)
-    if summary is None or (summary.document_id, summary.mode) != (document_id, mode):
-        return
-    show = st.info if summary.method is GenerationMethod.LLM else st.warning
-    show(summary.method_label)
-    for notice in summary.notices:
-        st.warning(notice)
-    for section in summary.sections:
-        st.markdown(f"#### {section.title}")
-        st.markdown(section.content)
-    name = f"{safe_filename(summary.filename)}-{summary.mode.value}-summary"
-    left, right = st.columns(2)
-    left.download_button("Download as Markdown", summary.to_markdown(), file_name=f"{name}.md")
-    right.download_button("Download as text", summary.to_text(), file_name=f"{name}.txt")
+    if summary and (summary.document_id, summary.mode) == (document_id, mode):
+        _show(summary)
