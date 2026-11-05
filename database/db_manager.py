@@ -12,13 +12,16 @@ from pathlib import Path
 
 from database.schema import (
     MIGRATIONS,
+    ChatMessage,
     DocumentRecord,
     DocumentStatus,
     IndexStatus,
     VectorRow,
 )
+from utils.helpers import utc_now_iso
 
 _BUSY_TIMEOUT_SECONDS = 10.0
+_MAX_MESSAGES_PER_CONVERSATION = 200
 
 
 class DuplicateDocumentError(Exception):
@@ -153,6 +156,67 @@ class DatabaseManager:
     def delete_document(self, document_id: str) -> None:
         with self._connect() as connection:
             connection.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))
+
+    def create_conversation(self, document_id: str | None) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO conversations (document_id, created_at) VALUES (?, ?)",
+                (document_id, utc_now_iso()),
+            )
+        return cursor.lastrowid
+
+    def latest_conversation(self, document_id: str | None) -> int | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT conversation_id FROM conversations WHERE document_id IS ?
+                ORDER BY conversation_id DESC LIMIT 1
+                """,
+                (document_id,),
+            ).fetchone()
+        return row["conversation_id"] if row else None
+
+    def delete_conversation(self, conversation_id: int) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM conversations WHERE conversation_id = ?", (conversation_id,)
+            )
+
+    def add_message(
+        self, conversation_id: int, role: str, content: str, payload: dict | None = None
+    ) -> None:
+        """Add a message, keeping only each conversation's most recent messages."""
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO messages (conversation_id, role, content, payload, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (conversation_id, role, content, json.dumps(payload or {}), utc_now_iso()),
+            )
+            connection.execute(
+                """
+                DELETE FROM messages WHERE conversation_id = ? AND message_id NOT IN (
+                    SELECT message_id FROM messages WHERE conversation_id = ?
+                    ORDER BY message_id DESC LIMIT ?
+                )
+                """,
+                (conversation_id, conversation_id, _MAX_MESSAGES_PER_CONVERSATION),
+            )
+
+    def list_messages(self, conversation_id: int) -> list[ChatMessage]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT role, content, payload, created_at FROM messages
+                WHERE conversation_id = ? ORDER BY message_id
+                """,
+                (conversation_id,),
+            ).fetchall()
+        return [
+            ChatMessage(row["role"], row["content"], json.loads(row["payload"]), row["created_at"])
+            for row in rows
+        ]
 
     def replace_chunks(
         self,

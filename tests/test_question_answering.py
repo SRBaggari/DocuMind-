@@ -222,3 +222,34 @@ def test_earlier_answers_are_not_treated_as_evidence(make, cats) -> None:
     answerer, llm = make()
     answerer.ask(QUESTION, history=["An earlier question about penguins"], model="m")
     assert "penguins" not in llm.prompts[0]
+
+
+def test_conversations_are_per_document_and_persist(db, test_settings, cats) -> None:
+    from database.db_manager import DatabaseManager
+
+    conversation = db.create_conversation(cats.document_id)
+    other = db.create_conversation(None)
+    db.add_message(conversation, "user", "Hello")
+    db.add_message(conversation, "assistant", "Hi", {"method": "llm", "sources": []})
+    reopened = DatabaseManager(test_settings.paths.database_path)
+    assert reopened.latest_conversation(cats.document_id) == conversation
+    assert reopened.latest_conversation(None) == other
+    messages = reopened.list_messages(conversation)
+    assert [m.role for m in messages] == ["user", "assistant"]
+    assert messages[1].payload["method"] == "llm"
+
+
+def test_new_conversation_and_clearing(db, cats) -> None:
+    first = db.create_conversation(cats.document_id)
+    second = db.create_conversation(cats.document_id)
+    assert db.latest_conversation(cats.document_id) == second
+    db.delete_conversation(second)
+    assert db.latest_conversation(cats.document_id) == first
+
+
+def test_history_keeps_only_recent_messages(db, cats) -> None:
+    conversation = db.create_conversation(cats.document_id)
+    for number in range(205):
+        db.add_message(conversation, "user", f"m{number}")
+    messages = db.list_messages(conversation)
+    assert len(messages) == 200 and messages[-1].content == "m204"
