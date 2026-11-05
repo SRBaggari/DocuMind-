@@ -1,10 +1,56 @@
 # DocuMind – Intelligent Document Understanding System
 
-DocuMind is a standalone application for understanding documents: upload PDF, DOCX or TXT files, then summarize them, ask questions, extract key information and compare them. All AI processing runs on your own computer. It needs no API keys or cloud accounts.
+DocuMind is a standalone application for understanding documents. Upload PDF, Word or text files, then summarize them, ask questions, extract key information and compare them. All AI processing runs on your own computer, so it needs no API keys or cloud accounts, and your documents are never uploaded anywhere.
 
-> **Status: Phase 7 (quality assurance).** Every page works and is connected to the real backend, with a local LLM through Ollama or without one. Open Settings to choose a local model. The full README is written in Phase 8.
+![The DocuMind dashboard](assets/screenshots/dashboard.png)
 
-## Architecture
+## Project overview
+
+DocuMind reads your documents, builds a local search index and answers from what the documents actually say. Every answer shows its sources and page numbers. If no evidence exists, it says so rather than guessing.
+
+It works in two modes:
+
+- **Local LLM mode**, which uses a model running on your computer through [Ollama](https://ollama.com).
+- **Extractive mode**, which needs no LLM and copies the most relevant sentences from your documents.
+
+Every result states which mode produced it.
+
+## Problem statement
+
+Long documents take time to read, and useful facts are easy to miss. Online AI tools can help, but they send your documents to someone else's servers, which rules them out for confidential reports, contracts and research. They can also state things the document never said, with nothing to show where a claim came from.
+
+## Objectives
+
+- Summarize, search and compare documents without any cloud service.
+- Base every answer on evidence and show where it came from.
+- Say clearly when the evidence is not there.
+- Remain useful on an ordinary laptop, with or without a local LLM.
+
+## Main features
+
+- **Upload:** PDF, DOCX and TXT files, with validation, duplicate detection and clear messages for damaged, password-protected or scanned files.
+- **Summaries:** quick, detailed and executive summaries, including long documents.
+- **Document chat:** questions answered from your documents, with citations, page numbers and supporting text.
+- **Comparison:** similarity scores, shared and unique topics, differing statements and figures, passages found in only one document, and a side-by-side view.
+- **Insights:** themes, names, dates, figures, important sections, conclusions, possible action items and document statistics.
+- **Charts:** keyword frequency, topic distribution, keyword comparison and a similarity heat map.
+- **Exports:** summaries as TXT or Markdown, keywords as CSV, comparisons as PDF and insights as JSON.
+
+## Technology stack
+
+| Purpose | Technology |
+| --- | --- |
+| Language | Python 3.12 |
+| Interface | Streamlit and Plotly |
+| Reading documents | PyMuPDF and python-docx |
+| Embeddings | Sentence Transformers (`all-MiniLM-L6-v2`) |
+| Vector search | FAISS, with a NumPy fallback |
+| Keywords and topics | scikit-learn (TF-IDF and NMF) |
+| Local LLM (optional) | Ollama |
+| Storage | SQLite and local files |
+| PDF reports | ReportLab |
+
+## System architecture
 
 The code has four layers, and dependencies only point downward:
 
@@ -99,19 +145,26 @@ A document whose text was extracted but could not be indexed, for example becaus
 - **Ollama is restricted to loopback.** `config.py` rejects any Ollama URL that does not point at this machine.
 - **Streamlit telemetry is off** and the server binds to `localhost` (see `.streamlit/config.toml`).
 
-## Local models
+## Folder structure
 
-Choose any installed model in the sidebar. If none is available, or a model fails, DocuMind uses extractive mode and says so. The default model `qwen2.5:3b` was not installed on the test machine, so these three were measured instead, on 8 questions over 4 test documents on the development laptop:
+```
+DocuMind/
+├── app.py                 Entry point, navigation and page routing
+├── run.bat                Windows startup script
+├── config.py              Settings and environment overrides
+├── requirements.txt       Runtime packages
+├── requirements-dev.txt   Test packages
+├── .streamlit/            Theme and server settings
+├── assets/                Styles, icon and screenshots
+├── core/                  Document processing and AI logic
+├── database/              SQLite schema and access
+├── ui/                    One module per page, plus shared components and charts
+├── utils/                 Validation, text helpers and logging
+├── tests/                 Automated tests
+└── data/                  Your documents and indexes (not tracked by git)
+```
 
-| Model | Correct | Cited | Mean answer time | Notes |
-| --- | --- | --- | --- | --- |
-| `gemma3:4b` | 8 of 8 | 8 of 8 | 4 s | Best overall. A 36-page PDF took about 8 minutes to summarize |
-| `qwen3:4b` | 8 of 8 | 8 of 8 | 41 s | Reasoning is slow. It can use up its output limit, which falls back to extractive |
-| `llama3.2:3b` | 7 of 8 | 8 of 8 | 2 s | Fastest, with terse answers |
-
-All three refused 3 of 3 questions the documents could not answer, and all three ignored an injected instruction.
-
-## Measured performance
+## Performance
 
 Two 1,000-page PDFs (720,000 words in total) on the development laptop, with the real embedding model:
 
@@ -145,21 +198,3 @@ Settings live in `config.py`. These environment variables override them:
 | `DOCUMIND_EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` |
 | `DOCUMIND_OLLAMA_URL` | `http://localhost:11434` (loopback only) |
 | `DOCUMIND_OLLAMA_MODEL` | `qwen2.5:3b` |
-
-## Setup (Windows)
-
-Requires Python 3.12. If the project is in a cloud-synced folder, keep the virtual environment outside it, as shown here, so its files are not synced.
-
-```powershell
-py -3.12 -m venv "$env:LOCALAPPDATA\DocuMind\.venv"
-& "$env:LOCALAPPDATA\DocuMind\.venv\Scripts\Activate.ps1"
-python -m pip install --upgrade pip
-pip install -r requirements.txt -r requirements-dev.txt
-streamlit run app.py
-```
-
-`py -3.12` finds python.org installs only. If it reports "No suitable Python runtime found", run `py --list` and use the listed tag instead, for example `py -V:Astral/CPython3.12.14 -m venv ...`.
-
-Run the tests with `pytest`. Sample documents are generated during the run.
-
-The embedding model (about 90 MB) downloads from Hugging Face on first use, then runs from the local cache. That download contains no document data.
