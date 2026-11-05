@@ -154,7 +154,16 @@ class DatabaseManager:
         return [_to_record(row) for row in rows]
 
     def delete_document(self, document_id: str) -> None:
+        """Delete a document's row and any conversation that quotes it."""
         with self._connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM conversations WHERE conversation_id IN (
+                    SELECT conversation_id FROM messages WHERE instr(payload, ?) > 0
+                )
+                """,
+                (document_id,),
+            )
             connection.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))
 
     def create_conversation(self, document_id: str | None) -> int:

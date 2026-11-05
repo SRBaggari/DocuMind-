@@ -253,3 +253,15 @@ def test_history_keeps_only_recent_messages(db, cats) -> None:
         db.add_message(conversation, "user", f"m{number}")
     messages = db.list_messages(conversation)
     assert len(messages) == 200 and messages[-1].content == "m204"
+
+
+def test_deleting_a_document_erases_chats_that_quote_it(db, indexed_ingestor, cats) -> None:
+    own = db.create_conversation(cats.document_id)
+    shared = db.create_conversation(None)
+    db.add_message(shared, "assistant", "Cats sleep.", {"sources": [{"document_id": cats.document_id}]})
+    unrelated = db.create_conversation(None)
+    db.add_message(unrelated, "user", "Hello")
+    indexed_ingestor.delete(cats.document_id)
+    assert db.list_messages(shared) == []
+    assert db.latest_conversation(None) == unrelated
+    assert own != unrelated
