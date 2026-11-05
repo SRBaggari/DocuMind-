@@ -70,6 +70,8 @@ def test_real_answer_is_correct_and_cited(services, model) -> None:
     answer = answerer.ask("How much operating revenue was there?", model=model)
     assert answer.method is GenerationMethod.LLM
     assert "148" in answer.text
+    assert any(source.cited for source in answer.sources)
+    assert len(answer.text) < 200, "the reply should be the answer, not the model's reasoning"
 
 
 def test_real_model_is_not_asked_about_unrelated_topics(services, model) -> None:
@@ -94,4 +96,6 @@ def test_real_summary_is_labelled_llm(db, services, client, model, test_settings
         doc.document_id, SummaryMode.QUICK, model=model
     )
     assert summary.method is GenerationMethod.LLM and summary.model == model
+    titles = [section.title for section in summary.sections]
+    assert titles == ["Overview", "Main Purpose", "Important Findings"]
     assert "drought" in summary.to_markdown().lower()
