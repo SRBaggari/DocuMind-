@@ -14,6 +14,7 @@ _SENTENCE_BOUNDARY = re.compile(
 _ABBREVIATIONS = frozenset(
     "al approx co corp dept dr e.g etc fig i.e inc jr ltd mr mrs ms no prof sr st vs".split()
 )
+_NUMBER = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?")
 # Typical subword tokens per English word, and characters per token for unspaced text.
 _TOKENS_PER_WORD = 1.3
 _CHARS_PER_TOKEN = 4
@@ -60,3 +61,17 @@ def split_sentences(text: str) -> list[str]:
     if tail:
         sentences.append(tail)
     return sentences
+
+
+def _numbers(text: str) -> set[str]:
+    return {match.replace(",", "").rstrip(".") for match in _NUMBER.findall(text)}
+
+
+def unverified_numbers(generated: str, source: str) -> list[str]:
+    """List figures in generated text that never appear in the source.
+
+    Single digits are skipped, because models use them for list items and for
+    numbers the source spells out.
+    """
+    known = _numbers(source)
+    return sorted(n for n in _numbers(generated) - known if len(n) > 1)
