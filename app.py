@@ -10,16 +10,18 @@ from dataclasses import dataclass
 import streamlit as st
 
 from config import APP_NAME, APP_TAGLINE, ensure_directories, settings
+from core.document_comparator import DocumentComparator
 from core.embedding_engine import EmbeddingEngine
 from core.indexing import DocumentIndexer
 from core.ingestion import DocumentIngestor
+from core.insights import InsightsEngine
 from core.ollama_client import OllamaClient, OllamaStatus
 from core.question_answering import QuestionAnswerer
 from core.retriever import Retriever
 from core.summarizer import Summarizer
 from core.vector_store import VectorStore
 from database.db_manager import DatabaseManager
-from ui import chat_page, summary_page, upload_page
+from ui import chat_page, comparison_page, insights_page, summary_page, upload_page
 from utils.logging_config import configure_logging
 
 _STATUS_TTL_SECONDS = 15
@@ -33,6 +35,8 @@ class Services:
     indexer: DocumentIndexer
     summarizer: Summarizer
     answerer: QuestionAnswerer
+    comparator: DocumentComparator
+    insights: InsightsEngine
     ollama: OllamaClient
 
 
@@ -56,6 +60,8 @@ def get_services() -> Services:
         indexer,
         Summarizer(db, ollama, settings),
         QuestionAnswerer(db, retriever, engine, ollama, settings),
+        DocumentComparator(db, indexer, ollama, settings),
+        InsightsEngine(db, settings),
         ollama,
     )
 
@@ -88,7 +94,7 @@ def main() -> None:
     st.title(APP_NAME)
     st.caption(APP_TAGLINE)
     services = get_services()
-    page = st.sidebar.radio("Page", ["Documents", "Summarize", "Ask"])
+    page = st.sidebar.radio("Page", ["Documents", "Summarize", "Ask", "Compare", "Insights"])
     model = select_model()
     if page == "Documents":
         upload_page.render(
@@ -99,8 +105,12 @@ def main() -> None:
         )
     elif page == "Summarize":
         summary_page.render(services.db, services.summarizer, model)
-    else:
+    elif page == "Ask":
         chat_page.render(services.db, services.answerer, model)
+    elif page == "Compare":
+        comparison_page.render(services.db, services.comparator, model)
+    else:
+        insights_page.render(services.db, services.insights)
 
 
 if __name__ == "__main__":
