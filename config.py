@@ -169,6 +169,9 @@ class OllamaConfig:
     temperature: float = 0.2
     max_output_tokens: int = 768
     context_window_tokens: int = 4096
+    # Input limits per prompt, leaving room in the window for instructions and the reply.
+    summary_input_tokens: int = 2200
+    qa_context_tokens: int = 2400
     connect_timeout_seconds: float = 3.0
     generate_timeout_seconds: float = 180.0
 
