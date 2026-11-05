@@ -30,7 +30,13 @@ from core.ollama_client import LocalLLM, OllamaError
 from core.retriever import RetrievedChunk, Retriever
 from database.db_manager import DatabaseManager
 from database.schema import DocumentStatus
-from utils.text_utils import estimate_tokens, strip_instructions, unverified_numbers
+from utils.text_utils import (
+    estimate_tokens,
+    extract_numbers,
+    strip_instructions,
+    tidy_evidence,
+    unverified_numbers,
+)
 
 logger = logging.getLogger("documind.qa")
 
@@ -57,12 +63,31 @@ _BROAD_WORDS = frozenset(
     objective objectives outcome outcomes overall paper purpose recommendation recommendations
     report research result results study summarize summary takeaway takeaways used""".split()
 )
-_BROAD_FLOOR = 0.0
+_FILLER_WORDS = frozenset(
+    """a about all an and any are at can could describe did do does for from give has have how
+    in is it its list me of on or please s tell that the their there these this those to us was
+    were what which who why will with would you your""".split()
+)
+_BROAD_FLOOR = 0.05
 _BROAD_NOTICE = (
     "This is a broad question, so the closest passages were used even if none matches strongly."
 )
 _WORD = re.compile(r"[^\W\d_]{3,}")
-_CITATION = re.compile(r"\[\s*S(\d+)\s*\]")
+_CITATION = re.compile(r"\[\s*S\d+(?:\s*[,;]\s*S\d+)*\s*\]")
+_CITATION_LABEL = re.compile(r"S\d+")
+_RAW_WORD = re.compile(r"[^\W_]+")
+_CUT_OFF_NOTICE = "The model reached its output limit, so this answer may be incomplete."
+_UNINDEXED_NOTICE = "{count} document(s) are not indexed yet, so keyword search was used for them."
+_FOLLOW_UP_MAX_OWN_WORDS = 1
+_TABLE_ROW = " | "
+_MIN_STATEMENT_WORDS = 4
+_DEFINITION_BONUS = 1.0
+_DEFINITION_QUESTION = re.compile(
+    r"(?:(?:what|who)(?:'s| is| are| was)|define|explain|describe)\s+(?:an? |the )?(?P<subject>.+)$",
+    re.IGNORECASE,
+)
+_HEADING_PREFIX = re.compile(r"^(?:[A-Z]{2,}\s+)+(?=[A-Z][a-z])")
+_STEM_LENGTH = 5
 _SOURCE_TAG = re.compile(r"</?\s*(source|question)\b[^>\n]*>?", re.IGNORECASE)
 
 _SYSTEM_PROMPT = f"""You answer questions using only the numbered sources provided.
@@ -121,17 +146,27 @@ def _is_broad(question: str) -> bool:
     Such a question shares few words with any passage, so it can score below the relevance
     floor even when the document answers it. Any subject word makes it a normal question.
     """
-    words = _content_words(question)
-    return bool(words) and words <= _BROAD_WORDS
+    words = set(_RAW_WORD.findall(question.lower()))
+    return bool(words & _BROAD_WORDS) and words <= _BROAD_WORDS | _FILLER_WORDS
 
 
 def _retrieval_query(question: str, history: Sequence[str]) -> str:
     """Add the previous question to a short follow-up such as "what caused it?"."""
     words = question.lower().split()
-    is_follow_up = len(words) <= _FOLLOW_UP_MAX_WORDS and _FOLLOW_UP_WORDS & {
-        word.strip("?.,!") for word in words
-    }
+    is_follow_up = (
+        len(words) <= _FOLLOW_UP_MAX_WORDS
+        and len(_content_words(question) - _FILLER_WORDS) <= _FOLLOW_UP_MAX_OWN_WORDS
+        and _FOLLOW_UP_WORDS & {word.strip("?.,!") for word in words}
+    )
     return f"{history[-1]} {question}" if history and is_follow_up else question
+
+
+def _stem(word: str) -> str:
+    return word.removesuffix("s")[:_STEM_LENGTH]
+
+
+def _stems(text: str) -> set[str]:
+    return {_stem(word) for word in _content_words(text)}
 
 
 def _rerank(hits: Sequence[RetrievedChunk], question: str) -> list[RetrievedChunk]:
@@ -192,6 +227,17 @@ class QuestionAnswerer:
             semantic = False
             notices.append(f"Semantic search is unavailable, so keyword search was used. {exc}")
             hits = self._keyword_search(query, ids)
+        if semantic and not hits:
+            waiting = [
+                document.document_id
+                for document in self._db.list_unindexed()
+                if ids is None or document.document_id in ids
+            ]
+            if waiting:
+                hits = self._keyword_search(query, waiting)
+                semantic = False
+                if hits:
+                    notices.append(_UNINDEXED_NOTICE.format(count=len(waiting)))
         if not hits:
             return Answer(question, NO_EVIDENCE_TEXT, GenerationMethod.NONE, notices=tuple(notices))
 
@@ -203,7 +249,7 @@ class QuestionAnswerer:
                 hit.filename,
                 hit.page_number,
                 hit.chunk_id,
-                hit.passage,
+                tidy_evidence(hit.text),
                 hit.score,
             )
             for index, hit in enumerate(hits, start=1)
@@ -212,11 +258,13 @@ class QuestionAnswerer:
         if use_llm:
             chosen = model or self._settings.ollama.default_model
             try:
-                return self._answer_with_llm(question, hits, sources, chosen, notices)
+                return self._answer_with_llm(question, query, hits, sources, chosen, notices)
             except OllamaError as exc:
                 logger.warning("LLM answer failed: %s", type(exc).__name__)
                 notices.append(f"The local LLM could not be used: {exc}")
-        return self._answer_extractively(question, hits, sources, notices, semantic)
+        return self._answer_extractively(
+            question, query, hits, sources, notices, semantic, _is_broad(question)
+        )
 
     def _context(
         self, hits: Sequence[RetrievedChunk], sources: Sequence[Source]
@@ -233,7 +281,7 @@ class QuestionAnswerer:
         used = 0
         injected = False
         for hit, source in zip(hits, sources, strict=True):
-            text, removed = strip_instructions(hit.text)
+            text, removed = strip_instructions(tidy_evidence(hit.text))
             text = _SOURCE_TAG.sub(" ", text)
             injected = injected or removed
             size = estimate_tokens(text)
@@ -242,19 +290,22 @@ class QuestionAnswerer:
             used += size
             blocks.append(f'<source id="{source.label}">\n{text}\n</source>')
             plain.append(text)
-            included.append(source)
+            # The user sees exactly the text the model was given.
+            included.append(replace(source, text=text))
         return "\n\n".join(blocks), "\n".join(plain), tuple(included), injected
 
     def _answer_with_llm(
         self,
         question: str,
+        query: str,
         hits: Sequence[RetrievedChunk],
         sources: tuple[Source, ...],
         model: str,
         notices: list[str],
     ) -> Answer:
         context, evidence, sources, injected = self._context(hits, sources)
-        safe_question = _SOURCE_TAG.sub(" ", question)
+        # A follow-up such as "what caused it?" means nothing without the earlier question.
+        safe_question = _SOURCE_TAG.sub(" ", query)
         prompt = f"{context}\n\n<question>\n{safe_question}\n</question>\n\n{_REMINDER}"
         reply = self._llm.generate(_SYSTEM_PROMPT, prompt, model)
         if injected:
@@ -272,11 +323,9 @@ class QuestionAnswerer:
         cited: set[str] = set()
 
         def check(match: re.Match[str]) -> str:
-            label = f"S{match[1]}"
-            if label in valid:
-                cited.add(label)
-                return f"[{label}]"
-            return ""
+            labels = [label for label in _CITATION_LABEL.findall(match[0]) if label in valid]
+            cited.update(labels)
+            return f"[{', '.join(labels)}]" if labels else ""
 
         text = _CITATION.sub(check, reply).strip()
         if not _CITATION.sub("", text).strip():
@@ -284,7 +333,10 @@ class QuestionAnswerer:
         checked = tuple(replace(source, cited=source.label in cited) for source in sources)
         if not cited:
             notices.append("The model did not cite a source, so check this against the evidence.")
-        missing = unverified_numbers(text, evidence)
+        if getattr(reply, "truncated", False):
+            notices.append(_CUT_OFF_NOTICE)
+        cited_text = "\n".join(source.text for source in sources if source.label in cited)
+        missing = unverified_numbers(text, cited_text or evidence)
         if missing:
             notices.append(
                 "These figures were not found in the sources, so verify them: "
@@ -303,16 +355,18 @@ class QuestionAnswerer:
     def _answer_extractively(
         self,
         question: str,
+        query: str,
         hits: Sequence[RetrievedChunk],
         sources: tuple[Source, ...],
         notices: list[str],
         semantic: bool,
+        broad: bool,
     ) -> Answer:
         references: dict[int, str] = {}
         sentences: list[Sentence] = []
         for hit, source in zip(hits, sources, strict=True):
             page = {"number": hit.page_number, "text": hit.text}
-            for sentence in document_sentences([page]):
+            for sentence in document_sentences([page], include_tables=True):
                 if all(sentence.text != other.text for other in sentences):
                     position = len(sentences)
                     sentences.append(replace(sentence, position=position))
@@ -321,13 +375,14 @@ class QuestionAnswerer:
         extra = None
         if semantic and sentences:
             vectors = self._embedder.embed_texts([sentence.text for sentence in sentences])
-            extra = vectors @ self._embedder.embed_query(question)
-        chosen = select_diverse(
-            rank_sentences(sentences, question, extra), _EXTRACTIVE_SENTENCES
-        )
+            extra = vectors @ self._embedder.embed_query(query)
+        ranked = rank_sentences(sentences, query, extra)
+        if not broad:
+            ranked = _mentioning_the_question(ranked, query)
+        chosen = select_diverse(_prefer_answers(ranked, query), _EXTRACTIVE_SENTENCES)
         if not chosen:
             return Answer(question, NO_EVIDENCE_TEXT, GenerationMethod.NONE, notices=tuple(notices))
-        lines = [f"- {s.text} ({references[s.position]})" for s in chosen]
+        lines = [f"- {_HEADING_PREFIX.sub('', s.text)} ({references[s.position]})" for s in chosen]
         return Answer(
             question,
             "\n".join([_EXTRACTIVE_INTRO, *lines]),
@@ -381,6 +436,63 @@ class QuestionAnswerer:
             for i in order
             if scores[i] >= _KEYWORD_MIN_SCORE
         ]
+
+
+def _mentioning_the_question(
+    ranked: Sequence[tuple[Sentence, float]], query: str
+) -> list[tuple[Sentence, float]]:
+    """Keep sentences that share a subject word and every figure asked about.
+
+    Copied sentences have no model to judge them, so "who is the CEO?" must not be
+    answered with whatever sentence happens to rank highest.
+    """
+    terms = _stems(query) - {_stem(word) for word in _BROAD_WORDS}
+    numbers = extract_numbers(query)
+    return [
+        (sentence, score)
+        for sentence, score in ranked
+        if (not terms or terms & _stems(sentence.text))
+        and numbers <= extract_numbers(sentence.text)
+    ]
+
+
+def _is_statement(text: str) -> bool:
+    """Say whether a sentence can answer something, unlike a heading or a question."""
+    if _TABLE_ROW in text:
+        return True
+    return text.rstrip().endswith((".", "!", ":", ";", '"', "”")) and (
+        len(text.split()) >= _MIN_STATEMENT_WORDS
+    )
+
+
+def _definition_subject(query: str) -> str | None:
+    match = _DEFINITION_QUESTION.match(query.strip())
+    return match["subject"].strip(" ?.!") if match else None
+
+
+def _prefer_answers(
+    ranked: Sequence[tuple[Sentence, float]], query: str
+) -> list[tuple[Sentence, float]]:
+    """Rank statements above headings, and "X is ..." first when asked what X is.
+
+    Short lines full of the question's words score highest on similarity alone, which puts
+    "What Is Aura?" above the sentence that says what Aura is. Headings and questions are
+    still used if a document offers nothing better.
+    """
+    statements = [item for item in ranked if _is_statement(item[0].text)]
+    if not statements:
+        return list(ranked)
+    subject = _definition_subject(query)
+    if subject is None:
+        return statements
+    defines = re.compile(
+        rf"\b{re.escape(subject)}\b\s+(?:is|are|was|were|means|refers to)\b", re.IGNORECASE
+    )
+    return sorted(
+        statements,
+        key=lambda item: item[1] + (_DEFINITION_BONUS if defines.search(item[0].text) else 0.0),
+        reverse=True,
+    )
 
 
 def _keyword_config(config: ChunkingConfig) -> ChunkingConfig:
