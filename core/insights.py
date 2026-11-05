@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from typing import Any
 
@@ -17,11 +18,11 @@ from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
 from config import Settings
 from core.chunker import chunk_pages
 from core.extractive import (
-    ACTION_PATTERN,
     CONCLUSION_PATTERN,
     Sentence,
     document_parts,
     document_sentences,
+    is_action,
     rank_sentences,
     select_diverse,
 )
@@ -192,8 +193,8 @@ def find_statistics(sentences: list[Sentence]) -> tuple[Statistic, ...]:
     return tuple(found[:_MAX_ITEMS])
 
 
-def _evidence(sentences: list[Sentence], pattern: re.Pattern[str], limit: int):
-    ranked = [item for item in rank_sentences(sentences) if pattern.search(item[0].text)]
+def _evidence(sentences: list[Sentence], matches: Callable[[str], object], limit: int):
+    ranked = [item for item in rank_sentences(sentences) if matches(item[0].text)]
     return tuple(
         Evidence(s.text, s.page_number) for s in select_diverse(ranked, limit, min_score=-1.0)
     )
@@ -255,8 +256,8 @@ class InsightsEngine:
             find_dates(sentences),
             find_statistics(sentences),
             self._important_sections(pages, content["blocks"]),
-            _evidence(sentences, CONCLUSION_PATTERN, _MAX_CONCLUSIONS),
-            _evidence(sentences, ACTION_PATTERN, _MAX_ACTIONS),
+            _evidence(sentences, CONCLUSION_PATTERN.search, _MAX_CONCLUSIONS),
+            _evidence(sentences, is_action, _MAX_ACTIONS),
         )
 
     def _important_sections(

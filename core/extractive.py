@@ -21,12 +21,13 @@ _TABLE_CELL_MARKER = " | "
 _MAX_WORD_OVERLAP = 0.6
 _MAX_DOCUMENT_PARTS = 8
 
-CONCLUSION_PATTERN = re.compile(
-    r"\b(conclu\w+|in summary|overall|therefore|expects?|future)\b", re.IGNORECASE
+CONCLUSION_PATTERN = re.compile(r"\b(conclu\w+|in summary|therefore|expects?)\b", re.IGNORECASE)
+_ACTION = re.compile(r"\b(recommends?|advises?|should|must|needs? to|next steps?)\b", re.IGNORECASE)
+_NEGATED_ACTION = re.compile(
+    r"(?:\bnot|\bnever|n't)\s+(?:\w+\s+)?(?:recommend|advise)|\b(?:should|must)\s+(?:not|never)\b",
+    re.IGNORECASE,
 )
-ACTION_PATTERN = re.compile(
-    r"\b(recommends?|should|must|needs? to|next steps?)\b", re.IGNORECASE
-)
+_MIN_TABLE_ROW_WORDS = 2
 
 
 class GenerationMethod(StrEnum):
@@ -42,18 +43,38 @@ class Sentence:
     position: int
 
 
-def document_sentences(pages: Iterable[Mapping[str, Any]]) -> list[Sentence]:
-    """List a document's unique prose sentences, keeping their page and order."""
+def is_action(text: str) -> bool:
+    """Say whether a sentence recommends doing something, not advises against it."""
+    return bool(_ACTION.search(text)) and not _NEGATED_ACTION.search(text)
+
+
+def document_sentences(
+    pages: Iterable[Mapping[str, Any]], include_tables: bool = False
+) -> list[Sentence]:
+    """List a document's unique sentences, keeping their page and order.
+
+    Lines of a paragraph are joined first, so a hard-wrapped sentence stays whole.
+    Table rows are left out unless asked for, because they are not prose.
+    """
     sentences: list[Sentence] = []
     seen: set[str] = set()
+
+    def add(text: str, page: Mapping[str, Any], minimum: int) -> None:
+        if count_words(text) >= minimum and text not in seen:
+            seen.add(text)
+            sentences.append(Sentence(text, page["number"], len(sentences)))
+
     for page in pages:
-        for line in page["text"].split("\n"):
-            if _TABLE_CELL_MARKER in line:
-                continue
-            for text in split_sentences(line):
-                if count_words(text) >= _MIN_SENTENCE_WORDS and text not in seen:
-                    seen.add(text)
-                    sentences.append(Sentence(text, page["number"], len(sentences)))
+        for paragraph in page["text"].split("\n\n"):
+            prose: list[str] = []
+            for line in paragraph.split("\n"):
+                if _TABLE_CELL_MARKER in line:
+                    if include_tables:
+                        add(line.strip(), page, _MIN_TABLE_ROW_WORDS)
+                else:
+                    prose.append(line.strip())
+            for text in split_sentences(" ".join(prose)):
+                add(text, page, _MIN_SENTENCE_WORDS)
     return sentences
 
 

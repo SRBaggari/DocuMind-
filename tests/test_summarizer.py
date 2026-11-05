@@ -7,7 +7,7 @@ from conftest import FakeLLM
 
 from core.extractive import GenerationMethod, document_sentences, rank_sentences, select_diverse
 from core.ollama_client import OllamaModelNotFoundError, OllamaUnavailableError
-from core.summarizer import NOT_STATED, Summarizer, SummaryError, SummaryMode
+from core.summarizer import NO_MATCH, NOT_STATED, Summarizer, SummaryError, SummaryMode
 from utils.text_utils import unverified_numbers
 
 REPORT = (
@@ -199,7 +199,7 @@ def test_extractive_does_not_invent_missing_sections(db, test_settings, indexed_
         doc.document_id, SummaryMode.EXECUTIVE, use_llm=False
     )
     sections = {section.title: section.content for section in summary.sections}
-    assert sections["Recommended Next Actions"] == NOT_STATED
+    assert sections["Recommended Next Actions"] == NO_MATCH
 
 
 def test_extractive_detailed_uses_docx_headings(

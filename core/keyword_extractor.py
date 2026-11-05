@@ -26,7 +26,9 @@ _TOKEN_PATTERN = r"(?u)\b[^\W\d_][\w'-]+\b"
 _GENERIC_TERMS = frozenset(
     "percent million billion thousand dollars year years month months day days".split()
 )
-_STOP_WORDS = sorted(ENGLISH_STOP_WORDS | _GENERIC_TERMS)
+# The standard list includes real subject words, which documents must be able to rank.
+_SUBJECT_WORDS = frozenset("fire system bill amount computer interest mill fill cry".split())
+_STOP_WORDS = sorted((ENGLISH_STOP_WORDS - _SUBJECT_WORDS) | _GENERIC_TERMS)
 _STOP_WORD_SET = frozenset(_STOP_WORDS)
 _PHRASE_WORD = re.compile(r"[^\W\d_][\w'-]+")
 _PHRASE_BREAK = re.compile(r"[^\w\s'-]|\b\d")

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -18,12 +18,12 @@ from config import ChunkingConfig, Settings
 from core.chunker import chunk_pages
 from core.embedding_engine import ProgressCallback
 from core.extractive import (
-    ACTION_PATTERN,
     CONCLUSION_PATTERN,
     GenerationMethod,
     Sentence,
     document_parts,
     document_sentences,
+    is_action,
     rank_sentences,
     select_diverse,
 )
@@ -37,17 +37,26 @@ from utils.text_utils import estimate_tokens, strip_instructions, unverified_num
 logger = logging.getLogger("documind.summarizer")
 
 NOT_STATED = "Not stated in the document."
+# Pattern matching cannot show that a document lacks something, so it never claims that.
+NO_MATCH = "No matching sentence found."
+_CUT_OFF_NOTICE = (
+    "The model reached its output limit, so this summary may be missing information."
+)
+_FILTERED_NOTICE = (
+    "Text that looked like instructions to the AI was found and was not given to the model."
+)
 _MAX_REDUCE_ROUNDS = 6
-_NOTES_MAX_TOKENS = 350
+_NOTES_MAX_TOKENS = 600
 _HEADING = re.compile(r"^\s*(?:#{1,4}\s*|\*\*)(?P<title>[^*#\n]+?)(?:\*\*)?:?\s*$")
 
 _PURPOSE = re.compile(
-    r"\b(purpose|aims?|objectives?|goals?|examines?|this (report|study|paper|document|policy))\b",
+    r"\b(purpose|aims?|objectives?|goals?|examines?|reviews?|"
+    r"this (report|study|paper|document|policy|memo))\b",
     re.IGNORECASE,
 )
 _FINDING = re.compile(
-    r"\b(found|findings?|results?|shows?|showed|increased?|decreased?|rose|fell|improved|"
-    r"reduced?|declined?|reached)\b",
+    r"\b(found|findings?|results?|shows?|showed|increased?|decreased?|rose|fell|grew|grown|"
+    r"doubled|tripled|improved|reduced?|declined?|reached)\b",
     re.IGNORECASE,
 )
 _STATISTIC = re.compile(r"\d")
@@ -198,7 +207,7 @@ def _cite(sentence: Sentence) -> str:
 
 
 def _bullets(sentences: Sequence[Sentence]) -> str:
-    return "\n".join(_cite(sentence) for sentence in sentences) or NOT_STATED
+    return "\n".join(_cite(sentence) for sentence in sentences) or NO_MATCH
 
 
 class Summarizer:
@@ -229,12 +238,19 @@ class Summarizer:
         if use_llm:
             chosen = model or self._settings.ollama.default_model
             try:
-                sections = self._summarize_with_llm(document_id, pages, mode, chosen, progress)
+                cut: list[bool] = []
+                sections = self._summarize_with_llm(
+                    document_id, pages, mode, chosen, progress, cut
+                )
             except OllamaError as exc:
                 logger.warning("LLM summary failed: %s", type(exc).__name__)
                 notices.append(f"The local LLM could not be used: {exc}")
             else:
                 notices += _missing_section_notices(sections, mode)
+                if any(cut):
+                    notices.append(_CUT_OFF_NOTICE)
+                if any(strip_instructions(page["text"])[1] for page in pages):
+                    notices.append(_FILTERED_NOTICE)
                 source = "\n".join(page["text"] for page in pages)
                 reply = "\n".join(section.content for section in sections)
                 missing = unverified_numbers(reply, source)
@@ -291,8 +307,10 @@ class Summarizer:
             close()
         return segments
 
-    def _ask(self, prompt: str, model: str, max_tokens: int | None = None) -> str:
-        return self._llm.generate(_SYSTEM_PROMPT, prompt, model, max_tokens=max_tokens)
+    def _ask(self, prompt: str, model: str, cut: list[bool], max_tokens: int | None = None) -> str:
+        reply = self._llm.generate(_SYSTEM_PROMPT, prompt, model, max_tokens=max_tokens)
+        cut.append(getattr(reply, "truncated", False))
+        return reply
 
     def _summarize_with_llm(
         self,
@@ -301,27 +319,28 @@ class Summarizer:
         mode: SummaryMode,
         model: str,
         progress: ProgressCallback | None,
+        cut: list[bool],
     ) -> tuple[SummarySection, ...]:
         segments = self._segments(document_id, pages)
         if len(segments) == 1:
             prompt = _final_prompt(mode, _neutralize(segments[0][1]), "document")
-            return _parse_sections(self._ask(prompt, model, _MODE_MAX_TOKENS[mode]), mode)
+            return _parse_sections(self._ask(prompt, model, cut, _MODE_MAX_TOKENS[mode]), mode)
 
         notes: list[str] = []
         for index, (label, text) in enumerate(segments):
             prompt = _NOTES_PROMPT.format(label=label, text=_neutralize(text))
-            notes.append(f"[{label}]\n{self._ask(prompt, model, _NOTES_MAX_TOKENS)}")
+            notes.append(f"[{label}]\n{self._ask(prompt, model, cut, _NOTES_MAX_TOKENS)}")
             if progress:
                 progress((index + 1) / (len(segments) + 1))
 
-        combined = self._reduce(notes, model)
+        combined = self._reduce(notes, model, cut)
         prompt = _final_prompt(mode, _neutralize(combined), "notes on a document")
-        reply = self._ask(prompt, model, _MODE_MAX_TOKENS[mode])
+        reply = self._ask(prompt, model, cut, _MODE_MAX_TOKENS[mode])
         if progress:
             progress(1.0)
         return _parse_sections(reply, mode)
 
-    def _reduce(self, notes: list[str], model: str) -> str:
+    def _reduce(self, notes: list[str], model: str, cut: list[bool]) -> str:
         """Merge notes in rounds until they fit in one prompt."""
         budget = self._settings.ollama.summary_input_tokens
         for _ in range(_MAX_REDUCE_ROUNDS):
@@ -343,6 +362,7 @@ class Summarizer:
                         label="earlier notes", text=_neutralize("\n\n".join(batch))
                     ),
                     model,
+                    cut,
                     _NOTES_MAX_TOKENS,
                 )
                 for batch in batches
@@ -360,35 +380,33 @@ class Summarizer:
         if not ranked:
             raise SummaryError("This document has too little text to summarize.")
 
-        def pick(pattern: re.Pattern[str] | None, limit: int) -> str:
-            matching = [
-                item for item in ranked if pattern is None or pattern.search(item[0].text)
-            ]
+        def pick(matches: Callable[[str], object] | None, limit: int) -> str:
+            matching = [item for item in ranked if matches is None or matches(item[0].text)]
             return _bullets(select_diverse(matching, limit, min_score=-1.0))
 
         if mode is SummaryMode.QUICK:
             return (
                 SummarySection("Overview", pick(None, 3)),
-                SummarySection("Main Purpose", pick(_PURPOSE, 1)),
-                SummarySection("Important Findings", pick(_FINDING, 4)),
+                SummarySection("Main Purpose", pick(_PURPOSE.search, 1)),
+                SummarySection("Important Findings", pick(_FINDING.search, 4)),
             )
         if mode is SummaryMode.EXECUTIVE:
             return (
-                SummarySection("Document Purpose", pick(_PURPOSE, 2)),
-                SummarySection("Main Findings", pick(_FINDING, 5)),
-                SummarySection("Important Statistics", pick(_STATISTIC, 6)),
-                SummarySection("Conclusions", pick(CONCLUSION_PATTERN, 3)),
-                SummarySection("Recommended Next Actions", pick(ACTION_PATTERN, 3)),
+                SummarySection("Document Purpose", pick(_PURPOSE.search, 2)),
+                SummarySection("Main Findings", pick(_FINDING.search, 5)),
+                SummarySection("Important Statistics", pick(_STATISTIC.search, 6)),
+                SummarySection("Conclusions", pick(CONCLUSION_PATTERN.search, 3)),
+                SummarySection("Recommended Next Actions", pick(is_action, 3)),
             )
 
         keywords = extract_keywords([page["text"] for page in pages], 12)
         return (
             *self._section_summaries(pages, blocks),
             SummarySection(
-                "Important Concepts", ", ".join(k.term for k in keywords) or NOT_STATED
+                "Important Concepts", ", ".join(k.term for k in keywords) or NO_MATCH
             ),
-            SummarySection("Supporting Information", pick(_STATISTIC, 6)),
-            SummarySection("Conclusions", pick(CONCLUSION_PATTERN, 3)),
+            SummarySection("Supporting Information", pick(_STATISTIC.search, 6)),
+            SummarySection("Conclusions", pick(CONCLUSION_PATTERN.search, 3)),
         )
 
     def _section_summaries(

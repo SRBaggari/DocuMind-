@@ -23,6 +23,12 @@ INSTALL_HELP = (
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
+class Reply(str):
+    """A model's reply. ``truncated`` means it reached the output limit before finishing."""
+
+    truncated: bool = False
+
+
 class OllamaError(Exception):
     """Generation failed. The message is safe to show to the user."""
 
@@ -164,13 +170,16 @@ class OllamaClient:
             logger.warning("Ollama returned status %d", response.status_code)
             raise OllamaError(f"Ollama returned an error (status {response.status_code}).")
         try:
-            content = response.json()["message"]["content"]
+            data = response.json()
+            content = data["message"]["content"]
         except (ValueError, KeyError, TypeError) as exc:
             raise OllamaError("Ollama returned a reply that could not be read.") from exc
         content = _THINK_BLOCK.sub("", content).strip()
         if not content:
             raise OllamaError("The local model returned an empty reply.")
-        return content
+        reply = Reply(content)
+        reply.truncated = data.get("done_reason") == "length"
+        return reply
 
     def _post_chat(self, body: dict) -> requests.Response:
         return self._session.post(
