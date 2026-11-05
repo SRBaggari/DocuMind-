@@ -162,7 +162,10 @@ def render(ctx: ui.AppContext) -> None:
         return
 
     with ui.card("controls"):
-        document_id = ui.document_select("Document", documents, "insights_document")
+        previous = st.session_state.get(_RESULT_KEY)
+        document_id = ui.document_select(
+            "Document", documents, "insights_document", previous.document_id if previous else None
+        )
         run = st.button("Analyze document", type="primary", icon=":material/insights:")
 
     if run:

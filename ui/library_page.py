@@ -10,6 +10,7 @@ from core.embedding_engine import EmbeddingModelError
 from core.indexing import StoredContentError, read_content
 from database.schema import DocumentRecord, DocumentStatus, IndexStatus
 from ui import components as ui
+from ui.upload_page import RESULTS_KEY as UPLOAD_RESULTS_KEY
 from utils.helpers import format_size, format_timestamp
 
 _CONFIRM_DELETE_KEY = "confirm_delete"
@@ -57,12 +58,11 @@ def _meta(document: DocumentRecord) -> str:
 
 
 def _delete(ctx: ui.AppContext, document_id: str) -> None:
-    try:
-        ctx.services.ingestor.delete(document_id)
-    except OSError:
-        st.session_state.pop(_CONFIRM_DELETE_KEY, None)
-        st.toast("This file is in use by another program. Close it and try again.")
-        return
+    ctx.services.ingestor.delete(document_id)
+    uploads = st.session_state.get(UPLOAD_RESULTS_KEY, [])
+    st.session_state[UPLOAD_RESULTS_KEY] = [
+        item for item in uploads if not item.document or item.document.document_id != document_id
+    ]
     st.session_state.pop(_CONFIRM_DELETE_KEY, None)
     st.session_state.pop(ui.OPEN_DOCUMENT_KEY, None)
     if st.session_state.get(ui.ACTIVE_DOCUMENT_KEY) == document_id:

@@ -19,7 +19,7 @@ _QUICK_ACTIONS = (
 
 
 def render(ctx: ui.AppContext) -> None:
-    ui.page_header("Welcome to DocuMind", "Everything here runs on this computer.")
+    ui.hero("Welcome to DocuMind", "Understand your documents. Everything runs on this computer.")
     documents = ctx.db.list_documents()
     if not documents:
         ui.no_documents("Upload a PDF, Word or text file to summarize, search and compare it.")

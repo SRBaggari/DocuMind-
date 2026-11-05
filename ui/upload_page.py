@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import logging
+
 import streamlit as st
 
 from core.ingestion import IngestOutcome, IngestResult
 from ui import components as ui
 from utils.helpers import format_size
 
-_RESULTS_KEY = "upload_results"
+logger = logging.getLogger("documind.ui")
+
+RESULTS_KEY = "upload_results"
 _UPLOADER_GENERATION_KEY = "uploader_generation"
 _TONES = {
     IngestOutcome.READY: "good",
@@ -47,24 +51,31 @@ def _show_result(result: IngestResult) -> None:
 
 
 def _process_uploads(ctx: ui.AppContext, files: list) -> None:
-    progress = st.progress(0.0, text="Processing documents")
+    progress = st.progress(0.0, text="Processing documents. Stay on this page until it finishes.")
     results: list[IngestResult] = []
     for index, file in enumerate(files, start=1):
         progress.progress((index - 1) / len(files), text=ui.safe_markdown(f"Processing {file.name}"))
-        result = ctx.services.ingestor.ingest(
-            file.name,
-            file.getvalue(),
-            lambda share, name=file.name, done=index - 1: progress.progress(
-                (done + share) / len(files), text=ui.safe_markdown(f"Indexing {name}")
-            ),
-        )
+        try:
+            result = ctx.services.ingestor.ingest(
+                file.name,
+                file.getvalue(),
+                lambda share, name=file.name, done=index - 1: progress.progress(
+                    (done + share) / len(files), text=ui.safe_markdown(f"Indexing {name}")
+                ),
+            )
+        except Exception:
+            # One bad file must not lose the rest of the batch.
+            logger.exception("Unexpected failure processing an upload")
+            result = IngestResult(
+                file.name, IngestOutcome.FAILED, "This file could not be processed."
+            )
         results.append(result)
         if result.outcome is IngestOutcome.READY and result.document:
             ctx.db.log_activity(
                 "upload", f"Uploaded {result.filename}", result.document.document_id
             )
     progress.empty()
-    st.session_state[_RESULTS_KEY] = results
+    st.session_state[RESULTS_KEY] = results
     st.session_state[_UPLOADER_GENERATION_KEY] = (
         st.session_state.get(_UPLOADER_GENERATION_KEY, 0) + 1
     )
@@ -97,5 +108,5 @@ def render(ctx: ui.AppContext) -> None:
         args=("documents",),
     )
 
-    for result in st.session_state.get(_RESULTS_KEY, []):
+    for result in st.session_state.get(RESULTS_KEY, []):
         _show_result(result)

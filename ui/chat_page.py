@@ -100,7 +100,7 @@ def render(ctx: ui.AppContext) -> None:
         )
         and conversation_id is not None
     ):
-        ctx.db.delete_conversation(conversation_id)
+        ctx.db.delete_conversations(document_id)
         st.rerun()
 
     messages = ctx.db.list_messages(conversation_id) if conversation_id else []

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,7 @@ def app_settings(tmp_path, monkeypatch) -> Settings:
     monkeypatch.setattr("ui.settings_page.settings", settings)
     monkeypatch.setattr("core.embedding_engine.EmbeddingEngine", FakeEngine)
     monkeypatch.setattr("core.ollama_client.OllamaClient", FakeClient)
+    DatabaseManager(settings.paths.database_path).set_setting("model", "extractive")
     st.cache_resource.clear()
     st.cache_data.clear()
     yield settings
@@ -207,8 +209,82 @@ def test_chat_with_a_model_is_labelled_and_cites_a_source(app_settings) -> None:
     go(at, "ask")
     at.chat_input[0].set_value(QUESTION).run()
     page = text(at)
-    assert "Local LLM: fake:1b" in page and "148 million dollars [S1]" in page
+    assert "Local LLM: fake:1b" in page and "148 million dollars \\[S1\\]" in page
     assert "Extractive mode" not in page
+
+
+def test_clear_chat_removes_every_chat_for_that_scope(app_settings) -> None:
+    at = start()
+    upload(at, ("report.txt", REPORT))
+    go(at, "ask")
+    at.chat_input[0].set_value(QUESTION).run()
+    click(at, "New chat")
+    at.chat_input[0].set_value(QUESTION).run()
+    click(at, "Clear chat")
+    assert "Try asking" in text(at) and not at.chat_message
+
+
+def test_deleted_documents_leave_the_upload_results(app_settings) -> None:
+    at = start()
+    upload(at, ("report.txt", REPORT))
+    go(at, "documents")
+    click(at, "Delete")
+    [b for b in at.button if b.label == "Delete" and b.key.startswith("yes_")][0].click().run()
+    go(at, "documents")
+    click(at, "Upload")
+    assert "report.txt" not in text(at)
+
+
+def test_a_finished_summary_is_there_after_leaving_the_page(app_settings) -> None:
+    at = start()
+    upload(at, ("first.txt", REPORT), ("second.txt", REVISED))
+    go(at, "summarize")
+    box = at.selectbox(key="summary_document")
+    ids = [d.document_id for d in DatabaseManager(app_settings.paths.database_path).list_documents()]
+    box.set_value(next(i for i in ids if i != box.value)).run()
+    click(at, "Generate summary")
+    assert len(at.get("download_button")) == 2
+    go(at, "dashboard")
+    go(at, "summarize")
+    assert len(at.get("download_button")) == 2
+
+
+def test_two_files_with_one_name_keep_separate_columns(app_settings) -> None:
+    at = start()
+    upload(at, ("report.txt", REPORT), ("report.txt", REVISED))
+    go(at, "compare")
+    click(at, "Compare")
+    assert not at.exception
+    columns = list(at.dataframe[0].value.columns)
+    assert columns == ["Keyword", "A: report.txt", "B: report.txt"]
+
+
+def test_a_bad_file_does_not_lose_the_rest_of_the_batch(app_settings, monkeypatch) -> None:
+    from core.ingestion import DocumentIngestor
+
+    real = DocumentIngestor.ingest
+
+    def flaky(self, filename, data, progress=None):
+        if filename == "bad.txt":
+            raise NotImplementedError("Unexpected.")
+        return real(self, filename, data, progress)
+
+    monkeypatch.setattr(DocumentIngestor, "ingest", flaky)
+    at = start()
+    upload(at, ("first.txt", REPORT), ("bad.txt", b"x"), ("second.txt", REVISED))
+    page = text(at)
+    assert "first.txt" in page and "second.txt" in page and "could not be processed" in page
+
+
+def test_a_second_copy_of_the_app_explains_itself(app_settings, monkeypatch) -> None:
+    from utils.instance_lock import AlreadyRunningError
+
+    def refuse(_path):
+        raise AlreadyRunningError("locked")
+
+    monkeypatch.setattr("utils.instance_lock.acquire_instance_lock", refuse)
+    at = AppTest.from_file(APP, default_timeout=30).run()
+    assert "already running" in at.error[0].value
 
 
 def test_suggested_question_asks_it(app_settings) -> None:
@@ -236,6 +312,19 @@ def test_model_choice_is_saved_and_used(app_settings) -> None:
     fresh = go(start(), "settings")
     assert fresh.selectbox(key="settings_model").value == "other:2b"
     assert "other:2b" in text(fresh)
+
+
+def test_an_installed_model_is_used_without_being_chosen(app_settings) -> None:
+    db = DatabaseManager(app_settings.paths.database_path)
+    with db._connect() as connection:
+        connection.execute("DELETE FROM app_settings")
+    at = start()
+    assert "Local LLM: fake:1b" in text(at) + " ".join(m.value for m in at.sidebar.markdown)
+
+
+def test_choosing_extractive_mode_is_respected(app_settings) -> None:
+    at = start()
+    assert "Extractive mode" in " ".join(m.value for m in at.sidebar.markdown)
 
 
 def test_compare_needs_two_documents_and_shows_results(app_settings) -> None:
@@ -308,11 +397,38 @@ def test_settings_values_persist_and_update(db) -> None:
 )
 def test_markdown_cannot_contact_another_server(unsafe) -> None:
     cleaned = safe_markdown(unsafe)
-    assert "](" not in cleaned and "://evil" not in cleaned
+    assert not re.search(r"(?<!\\)\]", cleaned) and "http://" not in cleaned
 
 
-def test_markdown_keeps_normal_formatting() -> None:
-    assert safe_markdown("**Bold** [S1]\n- item") == "**Bold** [S1]\n- item"
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "[![x](a)](//evil.test/a.png)",
+        "![a[b]](//evil.test/a.png)",
+        "![a\\]b](//evil.test/a.png)",
+        "> [r]: //evil.test/a.png\n\n![x][r]",
+        "- [r]: //evil.test/a.png\n\n![x][r]",
+        "[![x](a)](https:evil.test/a.png)",
+        "<img src=//evil.test/a.png>",
+        "<http://evil.test/>",
+    ],
+)
+def test_nested_and_reference_tricks_stay_literal(unsafe) -> None:
+    cleaned = safe_markdown(unsafe)
+    without_escapes = cleaned.replace("\\[", "").replace("\\]", "").replace("\\!", "").replace("\\<", "")
+    assert "[" not in without_escapes and "<" not in without_escapes
+    assert "![" not in cleaned.replace("\\!\\[", "")
+
+
+def test_bare_addresses_do_not_become_links() -> None:
+    for text in ("www.evil.test", "bob@evil.test", "https://evil.test"):
+        cleaned = safe_markdown(text)
+        assert "\u200b" in cleaned and text not in cleaned
+
+
+def test_markdown_keeps_normal_formatting_and_citations() -> None:
+    assert safe_markdown("**Bold** text\n- item") == "**Bold** text\n- item"
+    assert safe_markdown("[S1]: Revenue rose.") == "\\[S1\\]: Revenue rose."
 
 
 def test_quoted_text_stays_inside_its_html_block(monkeypatch) -> None:

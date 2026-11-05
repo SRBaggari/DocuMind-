@@ -34,16 +34,17 @@ ACTIVE_DOCUMENT_KEY = "active_document"
 OPEN_DOCUMENT_KEY = "open_document"
 
 _STYLES_PATH = PROJECT_ROOT / "assets" / "styles.css"
-_MARKDOWN_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
-_REFERENCE_LINK = re.compile(r"^\s*\[[^\]]+\]:\s*\S+.*$", re.MULTILINE)
-_BARE_URL = re.compile(r"\b(?:https?|ftp)://", re.IGNORECASE)
+_ACTIVE_MARKDOWN = re.compile(r"([\\\[\]!<>`])")
+_AUTOLINK = re.compile(r"\b(https?|ftp|www)(?=[:.])|(?=@)", re.IGNORECASE)
+_NO_WIDTH = "\u200b"
+_STAT_COLORS = 4
 
 LOGO = (
     '<svg width="30" height="30" viewBox="0 0 30 30" fill="none" aria-hidden="true">'
-    '<rect width="30" height="30" rx="8" fill="#1f66c1"/>'
+    '<rect width="30" height="30" rx="8" fill="#6366f1"/>'
     '<path d="M9 7.5h8l4.5 4.5v10.5H9z" fill="#fff"/>'
-    '<path d="M17 7.5V12h4.5" fill="#bcd4f2"/>'
-    '<path d="M12 16h6M12 19h4" stroke="#1f66c1" stroke-width="1.5" stroke-linecap="round"/>'
+    '<path d="M17 7.5V12h4.5" fill="#c7cbfb"/>'
+    '<path d="M12 16h6M12 19h4" stroke="#6366f1" stroke-width="1.5" stroke-linecap="round"/>'
     "</svg>"
 )
 
@@ -107,10 +108,15 @@ def inject_styles(path: Path = _STYLES_PATH) -> None:
 
 
 def safe_markdown(text: str) -> str:
-    """Keep formatting but remove what would make the browser contact another server."""
-    text = _MARKDOWN_LINK.sub(lambda match: match[1], text)
-    text = _REFERENCE_LINK.sub("", text)
-    return _BARE_URL.sub(lambda match: match[0].replace("://", ":// "), text)
+    """Make untrusted text safe to show as Markdown.
+
+    Escaping beats filtering here: every character that can start an image, link or HTML
+    tag is made literal, so no nesting or reference trick can rebuild one. Bold and lists
+    still work, and the text reads the same. A zero-width space stops bare addresses
+    from turning into links.
+    """
+    escaped = _ACTIVE_MARKDOWN.sub(r"\\\1", text)
+    return _AUTOLINK.sub(lambda match: (match[0] or "") + _NO_WIDTH, escaped)
 
 
 def brand(tagline: str) -> None:
@@ -135,6 +141,13 @@ def page_header(title: str, subtitle: str) -> None:
     )
 
 
+def hero(title: str, text: str) -> None:
+    _html(
+        f'<div class="dm-hero"><div class="dm-hero-title">{_escape(title)}</div>'
+        f'<div class="dm-hero-text">{_escape(text)}</div></div>'
+    )
+
+
 def section_title(title: str) -> None:
     _html(f'<div class="dm-section-title">{_escape(title)}</div>')
 
@@ -149,10 +162,12 @@ def pill(text: str, tone: str = "neutral") -> None:
 
 def stat_cards(items: Sequence[tuple[str, str] | tuple[str, str, str]]) -> None:
     """Show a row of labelled figures. Each item is (label, value) or (label, value, hint)."""
-    for column, item in zip(st.columns(len(items)), items, strict=True):
+    columns = st.columns(len(items))
+    for index, (column, item) in enumerate(zip(columns, items, strict=True)):
         hint = f'<div class="dm-stat-hint">{_escape(item[2])}</div>' if len(item) > 2 else ""
         column.markdown(
-            f'<div class="dm-stat"><div class="dm-stat-label">{_escape(item[0])}</div>'
+            f'<div class="dm-stat dm-stat-{index % _STAT_COLORS + 1}">'
+            f'<div class="dm-stat-label">{_escape(item[0])}</div>'
             f'<div class="dm-stat-value">{_escape(item[1])}</div>{hint}</div>',
             unsafe_allow_html=True,
         )
@@ -191,13 +206,13 @@ def document_select(
     label: str,
     documents: Sequence[DocumentRecord],
     key: str,
-    default_index: int = 0,
+    preferred: str | None = None,
 ) -> str:
-    """Show a document picker that starts on the document chosen elsewhere in the app."""
+    """Show a document picker that starts on ``preferred``, or on the active document."""
     names = {document.document_id: document.original_filename for document in documents}
     ids = list(names)
-    active = st.session_state.get(ACTIVE_DOCUMENT_KEY)
-    index = ids.index(active) if active in names and default_index == 0 else default_index
+    start = preferred if preferred in names else st.session_state.get(ACTIVE_DOCUMENT_KEY)
+    index = ids.index(start) if start in names else 0
     return st.selectbox(label, ids, index=index, format_func=names.get, key=key)
 
 

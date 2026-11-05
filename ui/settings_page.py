@@ -25,6 +25,12 @@ _SESSION_RESULTS = (
 )
 
 
+def _save_model(ctx: ui.AppContext) -> None:
+    choice = st.session_state["settings_model"]
+    saved = EXTRACTIVE_CHOICE if choice == _EXTRACTIVE_LABEL else choice
+    ctx.db.set_setting(MODEL_SETTING, saved)
+
+
 def _show_local_ai(ctx: ui.AppContext) -> None:
     with ui.card("ollama"):
         ui.section_title("Local AI")
@@ -41,13 +47,14 @@ def _show_local_ai(ctx: ui.AppContext) -> None:
         if status.models:
             options = [*status.models, _EXTRACTIVE_LABEL]
             current = ctx.model if ctx.model in options else _EXTRACTIVE_LABEL
-            choice = st.selectbox(
-                "Model", options, index=options.index(current), key="settings_model"
+            st.selectbox(
+                "Model",
+                options,
+                index=options.index(current),
+                key="settings_model",
+                on_change=_save_model,
+                args=(ctx,),
             )
-            if choice != current:
-                saved = EXTRACTIVE_CHOICE if choice == _EXTRACTIVE_LABEL else choice
-                ctx.db.set_setting(MODEL_SETTING, saved)
-                st.rerun()
             st.caption(
                 "Without a model, DocuMind copies relevant sentences instead of writing answers."
             )
@@ -89,11 +96,14 @@ def _show_storage(ctx: ui.AppContext) -> None:
 
 
 def _clear_all(ctx: ui.AppContext) -> None:
-    removed = ctx.services.ingestor.delete_all()
+    removed, left = ctx.services.ingestor.delete_all()
     for key in _SESSION_RESULTS:
         st.session_state.pop(key, None)
     st.session_state[_CONFIRM_KEY] = ""
-    st.toast(f"Removed {removed} document(s) and all chat history.")
+    message = f"Removed {removed} document(s) and all chat history."
+    if left:
+        message += f" {left} file(s) are in use and will be removed when DocuMind next starts."
+    st.toast(message)
 
 
 def _show_data_management(ctx: ui.AppContext) -> None:

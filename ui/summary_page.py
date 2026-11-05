@@ -54,14 +54,21 @@ def render(ctx: ui.AppContext) -> None:
         return
     ui.extractive_notice(ctx)
 
+    # Summaries can take minutes, so coming back to this page must show the finished one.
+    previous = st.session_state.get(_RESULT_KEY)
     with ui.card("controls"):
         left, right = st.columns([3, 2], vertical_alignment="bottom")
         with left:
-            document_id = ui.document_select("Document", documents, "summary_document")
+            document_id = ui.document_select(
+                "Document",
+                documents,
+                "summary_document",
+                previous.document_id if previous else None,
+            )
         mode = right.segmented_control(
             "Summary type",
             list(SummaryMode),
-            default=SummaryMode.QUICK,
+            default=previous.mode if previous else SummaryMode.QUICK,
             format_func=_MODE_LABELS.get,
             key="summary_mode",
         ) or SummaryMode.QUICK

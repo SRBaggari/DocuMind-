@@ -139,7 +139,8 @@ def _show_side_by_side(comparison: Comparison) -> None:
 
 
 def _show_charts(comparison: Comparison) -> None:
-    name_a, name_b = comparison.filename_a, comparison.filename_b
+    # "A:" and "B:" keep two versions of the same file name apart.
+    name_a, name_b = f"A: {comparison.filename_a}", f"B: {comparison.filename_b}"
     keywords = comparison.keywords[:_CHART_KEYWORDS]
     if keywords:
         ui.section_title("Keyword importance")
@@ -196,12 +197,20 @@ def render(ctx: ui.AppContext) -> None:
         return
 
     with ui.card("controls"):
+        previous = st.session_state.get(_RESULT_KEY)
         left, right = st.columns(2)
         with left:
-            document_a = ui.document_select("Document A", documents, "compare_a")
+            document_a = ui.document_select(
+                "Document A", documents, "compare_a", previous.document_a if previous else None
+            )
         with right:
             others = [doc for doc in documents if doc.document_id != document_a]
-            document_b = ui.document_select("Document B", others, f"compare_b_{document_a}", 0)
+            document_b = ui.document_select(
+                "Document B",
+                others,
+                f"compare_b_{document_a}",
+                previous.document_b if previous else None,
+            )
         run = st.button("Compare", type="primary", icon=":material/compare_arrows:")
 
     if run:
