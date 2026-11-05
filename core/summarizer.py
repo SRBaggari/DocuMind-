@@ -32,7 +32,7 @@ from core.keyword_extractor import extract_keywords
 from core.ollama_client import LocalLLM, OllamaError
 from database.db_manager import DatabaseManager
 from database.schema import DocumentStatus
-from utils.text_utils import estimate_tokens, unverified_numbers
+from utils.text_utils import estimate_tokens, strip_instructions, unverified_numbers
 
 logger = logging.getLogger("documind.summarizer")
 
@@ -152,8 +152,8 @@ def _final_prompt(mode: SummaryMode, text: str, label: str) -> str:
 
 
 def _neutralize(text: str) -> str:
-    """Stop document text from closing the tag that marks it as data."""
-    return re.sub(r"</?\s*document", "[document", text, flags=re.IGNORECASE)
+    """Remove instructions, and stop document text closing the tag that marks it as data."""
+    return re.sub(r"</?\s*document", "[document", strip_instructions(text)[0], flags=re.IGNORECASE)
 
 
 def _parse_sections(reply: str, mode: SummaryMode) -> tuple[SummarySection, ...]:

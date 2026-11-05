@@ -17,7 +17,14 @@ _ABBREVIATIONS = frozenset(
 _NUMBER = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?")
 _INJECTION = re.compile(
     r"\b(ignore|disregard|forget|override)\b.{0,40}\b(instructions?|rules?|prompts?|above|"
-    r"previous)\b|\byou are now\b|\bsystem prompt\b|\bnew instructions?\b",
+    r"previous)\b|\byou are now\b|\bsystem prompt\b|\bnew instructions?\b"
+    # Requests aimed at a model, however politely they are worded.
+    r"|\b(?:assistant|chatbot|language model|ai model)\s*[,:]"
+    r"|^\W*(?:system|assistant|developer|administrator)\s*:"
+    r"|\b(?:reply|respond|answer|say|print|output)\b.{0,50}"
+    r"\b(?:only|nothing else|every question|any question|single word|exactly)\b"
+    r"|\byour (?:only|new|next) (?:reply|response|answer|task|job|role)\b"
+    r"|\bnew task\b",
     re.IGNORECASE,
 )
 # Typical subword tokens per English word, and characters per token for unspaced text.
