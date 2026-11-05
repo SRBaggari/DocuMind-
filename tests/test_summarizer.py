@@ -66,6 +66,15 @@ def test_invented_figures_are_flagged(db, test_settings, document) -> None:
     assert not any("148" in notice for notice in summary.notices)
 
 
+def test_cut_off_reply_reports_missing_sections(db, test_settings, document) -> None:
+    summary = summarizer_with(db, test_settings, FakeLLM("## Overview\nText.")).summarize(
+        document.document_id, SummaryMode.QUICK, model="m"
+    )
+    assert any(
+        "Main Purpose" in notice and "Important Findings" in notice for notice in summary.notices
+    )
+
+
 def test_each_mode_asks_for_its_own_sections(db, test_settings, document) -> None:
     llm = FakeLLM("text")
     summarizer = summarizer_with(db, test_settings, llm)

@@ -96,6 +96,14 @@ _MODE_SECTIONS: dict[SummaryMode, tuple[tuple[str, str], ...]] = {
 }
 
 
+# Output limits, sized so a full reply fits the context window alongside its input.
+_MODE_MAX_TOKENS = {
+    SummaryMode.QUICK: 500,
+    SummaryMode.DETAILED: 1300,
+    SummaryMode.EXECUTIVE: 1000,
+}
+
+
 class SummaryError(Exception):
     """A summary cannot be produced. The message is safe to show to the user."""
 
@@ -160,6 +168,17 @@ def _parse_sections(reply: str, mode: SummaryMode) -> tuple[SummarySection, ...]
     return tuple(parsed) or (SummarySection("Summary", reply.strip()),)
 
 
+def _missing_section_notices(
+    sections: Sequence[SummarySection], mode: SummaryMode
+) -> list[str]:
+    """Report sections the model never reached, so a cut-off reply is not mistaken for whole."""
+    found = {section.title for section in sections}
+    missing = [title for title, _ in _MODE_SECTIONS[mode] if title not in found]
+    if not missing:
+        return []
+    return ["The model's reply is missing these sections: " + ", ".join(missing)]
+
+
 def _cite(sentence: Sentence) -> str:
     return f"- {sentence.text} (p. {sentence.page_number})" if sentence.page_number else (
         f"- {sentence.text}"
@@ -200,6 +219,7 @@ class Summarizer:
                 logger.warning("LLM summary failed: %s", type(exc).__name__)
                 notices.append(f"The local LLM could not be used: {exc}")
             else:
+                notices += _missing_section_notices(sections, mode)
                 source = "\n".join(page["text"] for page in pages)
                 reply = "\n".join(section.content for section in sections)
                 missing = unverified_numbers(reply, source)
@@ -269,8 +289,8 @@ class Summarizer:
     ) -> tuple[SummarySection, ...]:
         segments = self._segments(document_id, pages)
         if len(segments) == 1:
-            reply = self._ask(_final_prompt(mode, _neutralize(segments[0][1]), "document"), model)
-            return _parse_sections(reply, mode)
+            prompt = _final_prompt(mode, _neutralize(segments[0][1]), "document")
+            return _parse_sections(self._ask(prompt, model, _MODE_MAX_TOKENS[mode]), mode)
 
         notes: list[str] = []
         for index, (label, text) in enumerate(segments):
@@ -280,7 +300,8 @@ class Summarizer:
                 progress((index + 1) / (len(segments) + 1))
 
         combined = self._reduce(notes, model)
-        reply = self._ask(_final_prompt(mode, _neutralize(combined), "notes on a document"), model)
+        prompt = _final_prompt(mode, _neutralize(combined), "notes on a document")
+        reply = self._ask(prompt, model, _MODE_MAX_TOKENS[mode])
         if progress:
             progress(1.0)
         return _parse_sections(reply, mode)
