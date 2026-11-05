@@ -73,7 +73,7 @@ class FaissBackend:
         scores, ids = self._index.search(query[None, :], limit, params=params)
         return [
             (int(vector_id), float(score))
-            for vector_id, score in zip(ids[0], scores[0])
+            for vector_id, score in zip(ids[0], scores[0], strict=True)
             if vector_id != -1
         ]
 

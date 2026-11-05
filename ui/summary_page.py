@@ -86,6 +86,6 @@ def render(ctx: ui.AppContext) -> None:
             st.error(str(exc))
         progress.empty()
 
-    summary = st.session_state.get(_RESULT_KEY)
-    if summary and (summary.document_id, summary.mode) == (document_id, mode):
-        _show(summary)
+    result = st.session_state.get(_RESULT_KEY)
+    if result and (result.document_id, result.mode) == (document_id, mode):
+        _show(result)

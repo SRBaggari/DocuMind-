@@ -149,7 +149,7 @@ def pill(text: str, tone: str = "neutral") -> None:
 
 def stat_cards(items: Sequence[tuple[str, str] | tuple[str, str, str]]) -> None:
     """Show a row of labelled figures. Each item is (label, value) or (label, value, hint)."""
-    for column, item in zip(st.columns(len(items)), items):
+    for column, item in zip(st.columns(len(items)), items, strict=True):
         hint = f'<div class="dm-stat-hint">{_escape(item[2])}</div>' if len(item) > 2 else ""
         column.markdown(
             f'<div class="dm-stat"><div class="dm-stat-label">{_escape(item[0])}</div>'

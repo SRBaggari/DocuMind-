@@ -68,7 +68,7 @@ def _page_units(text: str, limit: int) -> list[_Unit]:
 
 def _render(units: list[_Unit]) -> str:
     parts: list[str] = []
-    for previous, unit in zip([None, *units], units):
+    for previous, unit in zip([None, *units], units, strict=False):
         if previous is not None:
             if unit.paragraph != previous.paragraph:
                 parts.append("\n\n")

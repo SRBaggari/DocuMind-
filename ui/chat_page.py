@@ -91,11 +91,14 @@ def render(ctx: ui.AppContext) -> None:
     if new.button("New chat", icon=":material/add_comment:", width="stretch"):
         ctx.db.create_conversation(document_id)
         st.rerun()
-    if clear.button(
-        "Clear chat",
-        icon=":material/delete_sweep:",
-        width="stretch",
-        disabled=conversation_id is None,
+    if (
+        clear.button(
+            "Clear chat",
+            icon=":material/delete_sweep:",
+            width="stretch",
+            disabled=conversation_id is None,
+        )
+        and conversation_id is not None
     ):
         ctx.db.delete_conversation(conversation_id)
         st.rerun()
@@ -103,7 +106,7 @@ def render(ctx: ui.AppContext) -> None:
     messages = ctx.db.list_messages(conversation_id) if conversation_id else []
     if not messages:
         ui.section_title("Try asking")
-        for column, question in zip(st.columns(len(_SUGGESTIONS)), _SUGGESTIONS):
+        for column, question in zip(st.columns(len(_SUGGESTIONS)), _SUGGESTIONS, strict=True):
             column.button(
                 question,
                 width="stretch",
@@ -137,6 +140,6 @@ def render(ctx: ui.AppContext) -> None:
         )
     ctx.db.add_message(conversation_id, "user", question)
     ctx.db.add_message(conversation_id, "assistant", answer.text, _payload(answer))
-    where = names[selected]
+    where = names.get(selected, "All documents")
     ctx.db.log_activity("question", f"Asked a question in {where}", document_id)
     st.rerun()

@@ -118,7 +118,7 @@ def _page_parts(pages: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, A
         paragraphs = [text for text in pages[0]["text"].split("\n\n") if text.strip()]
         pages = [{"number": None, "text": text} for text in paragraphs]
     size = max(-(-len(pages) // _MAX_DOCUMENT_PARTS), 1)
-    parts = []
+    parts: list[tuple[str, list[dict[str, Any]]]] = []
     for start in range(0, len(pages), size):
         group = pages[start : start + size]
         numbers = [page["number"] for page in group if page["number"]]

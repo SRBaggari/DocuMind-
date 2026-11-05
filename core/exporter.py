@@ -127,7 +127,7 @@ def comparison_pdf(comparison: Comparison) -> bytes:
     story += [Paragraph("Summary", heading), Paragraph(escape(comparison.summary), body)]
     if comparison.explanation:
         story += [
-            Paragraph(f"Explanation by a local LLM ({escape(comparison.explanation_model)})", heading),
+            Paragraph(f"Explanation by a local LLM ({escape(comparison.explanation_model or '')})", heading),
             Paragraph(_clip(comparison.explanation), body),
         ]
 
