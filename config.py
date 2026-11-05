@@ -184,6 +184,8 @@ class AnalysisConfig:
     max_topics: int = 5
     terms_per_topic: int = 8
     sections_per_topic: int = 3
+    # Topics use small even segments, so results do not depend on a file's page layout.
+    topic_segment_tokens: int = 150
     similar_passage_threshold: float = 0.75
     # A passage scoring below this against every passage of the other document is unique.
     unique_passage_threshold: float = 0.5

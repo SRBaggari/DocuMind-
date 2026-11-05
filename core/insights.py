@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
@@ -214,6 +214,15 @@ class InsightsEngine:
         sentences = document_sentences(pages)
         config = self._settings.analysis
         chunks = chunk_pages(document_id, pages, self._settings.chunking)
+        segments = chunk_pages(
+            document_id,
+            pages,
+            replace(
+                self._settings.chunking,
+                chunk_size_tokens=config.topic_segment_tokens,
+                chunk_overlap_tokens=0,
+            ),
+        )
         keywords = extract_keywords(texts, config.max_keywords)
         words = document.word_count or 0
         statistics = DocumentStatistics(
@@ -231,7 +240,7 @@ class InsightsEngine:
             statistics,
             tuple(
                 identify_topics(
-                    chunks, config.max_topics, config.terms_per_topic, config.sections_per_topic
+                    segments, config.max_topics, config.terms_per_topic, config.sections_per_topic
                 )
             ),
             tuple(keywords),

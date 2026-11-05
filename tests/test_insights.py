@@ -94,6 +94,29 @@ def test_document_without_text_is_refused(db, test_settings) -> None:
         InsightsEngine(db, test_settings).analyze("missing")
 
 
+def test_themes_do_not_depend_on_page_layout(db, test_settings, ingestor) -> None:
+    text = "\n\n".join(
+        f"{subject} " * 3 + f"The {subject} team reviewed the {detail} during {season} and wrote "
+        f"a detailed note about {detail} for the regional {subject} office to read later on."
+        for subject, detail, season in (
+            ("water", "reservoir levels", "summer"),
+            ("budget", "capital spending", "autumn"),
+            ("safety", "inspection records", "winter"),
+            ("transport", "rail timetables", "spring"),
+            ("housing", "rental contracts", "summer"),
+            ("energy", "solar panels", "autumn"),
+            ("health", "clinic waiting lists", "winter"),
+            ("schools", "exam timetables", "spring"),
+            ("parks", "tree planting", "summer"),
+            ("libraries", "opening hours", "autumn"),
+            ("waste", "recycling routes", "winter"),
+            ("policing", "patrol staffing", "spring"),
+        )
+    )
+    document = ingestor.ingest("flat.txt", text.encode()).document
+    assert InsightsEngine(db, test_settings).analyze(document.document_id).themes
+
+
 def test_short_document_still_gives_insights(db, test_settings, ingestor) -> None:
     document = ingestor.ingest("short.txt", b"Only one short sentence here.").document
     result = InsightsEngine(db, test_settings).analyze(document.document_id)
