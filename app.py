@@ -48,9 +48,7 @@ _NAVIGATION: tuple[tuple[str, str, str], ...] = (
 _PAGES: dict[str, Callable[[ui.AppContext], None]] = {
     "dashboard": dashboard.render,
     "documents": library_page.render,
-    "upload": lambda ctx: upload_page.render(
-        ctx.db, ctx.services.ingestor, ctx.services.indexer, ctx.max_file_size_mb
-    ),
+    "upload": upload_page.render,
     "summarize": lambda ctx: summary_page.render(
         ctx.db, ctx.services.summarizer, ctx.model
     ),
