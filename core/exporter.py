@@ -20,7 +20,12 @@ from reportlab.pdfbase.pdfmetrics import registerFontFamily
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from core.document_comparator import NOT_CORRECTNESS_NOTE, Comparison, UniquePassage
+from core.document_comparator import (
+    NOT_CORRECTNESS_NOTE,
+    Comparison,
+    UniquePassage,
+    format_percent,
+)
 from core.insights import DocumentInsights
 from core.keyword_extractor import Keyword
 
@@ -78,10 +83,6 @@ def _page(page: int | None) -> str:
     return f" (p. {page})" if page else ""
 
 
-def _percent(value: float | None) -> str:
-    return "Not available" if value is None else f"{value * 100:.0f}%"
-
-
 def comparison_pdf(comparison: Comparison) -> bytes:
     """Build a PDF report. Document text is escaped, because Paragraph reads it as markup."""
     _register_fonts()
@@ -104,12 +105,12 @@ def comparison_pdf(comparison: Comparison) -> bytes:
     table = Table(
         [
             ["Measure", "Score", "What it measures"],
-            ["Overall", _percent(scores.overall), "Weighted semantic and lexical similarity"],
-            ["Semantic", _percent(scores.semantic), "Cosine similarity of passage embeddings"],
-            ["Lexical", _percent(scores.lexical), "TF-IDF cosine similarity of the texts"],
-            ["Exact wording", _percent(scores.exact), "Overlap of five-word sequences"],
-            ["A found in B", _percent(scores.coverage_a), "Share of A with related content in B"],
-            ["B found in A", _percent(scores.coverage_b), "Share of B with related content in A"],
+            ["Overall", format_percent(scores.overall), "Weighted semantic and lexical similarity"],
+            ["Semantic", format_percent(scores.semantic), "Cosine similarity of passage embeddings"],
+            ["Lexical", format_percent(scores.lexical), "TF-IDF cosine similarity of the texts"],
+            ["Exact wording", format_percent(scores.exact), "Overlap of five-word sequences"],
+            ["A found in B", format_percent(scores.coverage_a), "Share of A with related content in B"],
+            ["B found in A", format_percent(scores.coverage_b), "Share of B with related content in A"],
         ],
         colWidths=[35 * mm, 30 * mm, 100 * mm],
     )

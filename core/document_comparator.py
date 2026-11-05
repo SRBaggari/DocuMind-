@@ -54,7 +54,6 @@ _NEAR_MATCH_RATIO = 0.9
 _MIN_UNIQUE_WORDS = 12
 _BLOCK_ROWS = 1024
 _TOPIC_PRESENCE = 0.5
-_TOPIC_SEGMENT_TOKENS = 150
 _KEYWORD_POOL = 300
 _EXPLANATION_TOKENS = 350
 _WORD = re.compile(r"\w+")
@@ -376,24 +375,31 @@ def _term_presence(terms: Sequence[tuple[str, float]], words: set[str]) -> float
     return found / total if total else 0.0
 
 
-def _percent(value: float) -> str:
-    return f"{value * 100:.0f}%"
+def format_percent(value: float | None) -> str:
+    """Show a score, never rounding a near match up to a claim of 100%."""
+    if value is None:
+        return "N/A"
+    if round(value, 4) >= 1:
+        return "100%"
+    if value >= 0.995:
+        return ">99%"
+    return "<1%" if 0 < value < 0.005 else f"{value * 100:.0f}%"
 
 
 def _describe(comparison_parts: dict) -> str:
     """State the calculated results as plain sentences. No model is involved."""
     scores: SimilarityScores = comparison_parts["scores"]
     name_a, name_b = comparison_parts["filename_a"], comparison_parts["filename_b"]
-    semantic = f"semantic {_percent(scores.semantic)}, " if scores.semantic is not None else ""
+    semantic = f"semantic {format_percent(scores.semantic)}, " if scores.semantic is not None else ""
     lines = [
-        f"Overall similarity between {name_a} and {name_b} is {_percent(scores.overall)} "
-        f"({semantic}lexical {_percent(scores.lexical)}, "
-        f"exact wording {_percent(scores.exact)})."
+        f"Overall similarity between {name_a} and {name_b} is {format_percent(scores.overall)} "
+        f"({semantic}lexical {format_percent(scores.lexical)}, "
+        f"exact wording {format_percent(scores.exact)})."
     ]
     if scores.coverage_a is not None:
         lines.append(
-            f"{_percent(scores.coverage_a)} of {name_a} has related content in {name_b}, and "
-            f"{_percent(scores.coverage_b)} of {name_b} has related content in {name_a}."
+            f"{format_percent(scores.coverage_a)} of {name_a} has related content in {name_b}, and "
+            f"{format_percent(scores.coverage_b)} of {name_b} has related content in {name_a}."
         )
     common = comparison_parts["common_topics"]
     if common:
@@ -538,7 +544,7 @@ class DocumentComparator:
         config = self._settings.analysis
         segments = replace(
             self._settings.chunking,
-            chunk_size_tokens=_TOPIC_SEGMENT_TOKENS,
+            chunk_size_tokens=config.topic_segment_tokens,
             chunk_overlap_tokens=0,
         )
         chunks = [

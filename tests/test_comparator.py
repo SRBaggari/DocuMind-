@@ -14,6 +14,7 @@ from core.document_comparator import (
     DocumentComparator,
     MatchKind,
     _match_passages,
+    format_percent,
     shingle_overlap,
     statement_differences,
 )
@@ -216,6 +217,22 @@ def test_instructions_in_documents_never_reach_the_explanation_prompt(
     comparator.compare(add("a.txt", REPORT), add("b.txt", evil), model="m")
     assert "Ignore all previous" not in llm.prompts[0]
     assert llm.prompts[0].count("</comparison>") == 1
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (1.0, "100%"),
+        (0.99999, "100%"),
+        (0.997, ">99%"),
+        (0.62, "62%"),
+        (0.001, "<1%"),
+        (0.0, "0%"),
+        (None, "N/A"),
+    ],
+)
+def test_format_percent(value, expected) -> None:
+    assert format_percent(value) == expected
 
 
 def test_shingle_overlap_values() -> None:
