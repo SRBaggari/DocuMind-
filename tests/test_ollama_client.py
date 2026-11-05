@@ -93,6 +93,17 @@ def test_default_temperature_and_output_limit_come_from_config(server) -> None:
     assert server.last_request["options"]["num_predict"] == 33
 
 
+def test_think_blocks_are_removed(server) -> None:
+    server.chat_body = {"message": {"content": "<think>secret\nplan</think>\nAnswer"}}
+    assert client_for(server).generate("s", "p", "m") == "Answer"
+
+
+def test_model_without_think_support_is_retried(server) -> None:
+    server.reject_think = True
+    assert client_for(server).generate("s", "p", "m") == "Hello"
+    assert "think" not in server.last_request
+
+
 def test_missing_model(server) -> None:
     server.chat_status = 404
     with pytest.raises(OllamaModelNotFoundError, match="ollama pull alpha:1b"):

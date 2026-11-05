@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,7 @@ INSTALL_HELP = (
     "Install Ollama from https://ollama.com/download, start it, then download a model "
     "with: ollama pull qwen2.5:3b"
 )
+_THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
 class OllamaError(Exception):
@@ -121,6 +123,7 @@ class OllamaClient:
                 {"role": "user", "content": prompt},
             ],
             "stream": False,
+            "think": False,
             "options": {
                 "temperature": config.temperature if temperature is None else temperature,
                 "num_predict": max_tokens or config.max_output_tokens,
@@ -129,6 +132,9 @@ class OllamaClient:
         }
         try:
             response = self._post_chat(body)
+            if response.status_code == 400 and "think" in response.text.lower():
+                del body["think"]
+                response = self._post_chat(body)
         except requests.ConnectTimeout as exc:
             raise OllamaUnavailableError(
                 "Could not reach Ollama on this computer. Check that it is running."
@@ -154,7 +160,7 @@ class OllamaClient:
             content = response.json()["message"]["content"]
         except (ValueError, KeyError, TypeError) as exc:
             raise OllamaError("Ollama returned a reply that could not be read.") from exc
-        content = content.strip()
+        content = _THINK_BLOCK.sub("", content).strip()
         if not content:
             raise OllamaError("The local model returned an empty reply.")
         return content
