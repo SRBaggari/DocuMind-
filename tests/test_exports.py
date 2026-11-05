@@ -15,6 +15,7 @@ from core.exporter import comparison_pdf, insights_json, keywords_csv, safe_file
 from core.insights import InsightsEngine
 from core.keyword_extractor import Keyword
 from core.summarizer import Summarizer, SummaryMode
+from ui import charts
 
 REPORT = (
     "The Riverside Water Authority serves 410,000 residents across three counties.\n\n"
@@ -76,3 +77,16 @@ def test_pdf_report_opens_and_survives_markup_in_documents(
     assert "Document comparison report" in joined
     assert "<b>reached" in joined and "Århus" in joined
     assert "does not show that either one is correct" in joined
+
+
+def test_charts_contain_the_real_values(db, indexer, indexed_ingestor, test_settings) -> None:
+    a = indexed_ingestor.ingest("a.txt", REPORT.encode()).document.document_id
+    b = indexed_ingestor.ingest("b.txt", (REPORT + " More.").encode()).document.document_id
+    comparison = DocumentComparator(db, indexer, FakeLLM(), test_settings).compare(a, b)
+    figure = charts.keyword_comparison(comparison.keywords[:5], "a.txt", "b.txt")
+    assert [trace.name for trace in figure.data] == ["a.txt", "b.txt"]
+    assert list(figure.data[0].x) == [k.score_a for k in comparison.keywords[:5]]
+    heatmap = charts.similarity_heatmap(comparison.grid, "a.txt", "b.txt")
+    assert heatmap.data[0].zmin == 0 and heatmap.data[0].zmax == 1
+    frequency = charts.keyword_frequency([("water", 8), ("plan", 3)])
+    assert list(frequency.data[0].x) == [8, 3]
