@@ -168,12 +168,14 @@ class OllamaConfig:
     )
     temperature: float = 0.2
     max_output_tokens: int = 768
-    context_window_tokens: int = 4096
+    # Extra output allowed for a thinking model's reasoning, which is thrown away.
+    thinking_tokens: int = 2048
+    context_window_tokens: int = 8192
     # Input limits per prompt, leaving room in the window for instructions and the reply.
     summary_input_tokens: int = 2200
     qa_context_tokens: int = 2400
     connect_timeout_seconds: float = 3.0
-    generate_timeout_seconds: float = 180.0
+    generate_timeout_seconds: float = 300.0
 
 
 @dataclass(frozen=True)

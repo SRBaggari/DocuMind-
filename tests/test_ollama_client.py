@@ -79,16 +79,18 @@ def test_status_lists_models(server) -> None:
 
 
 def test_generate_sends_settings_and_returns_text(server) -> None:
-    client = client_for(server)
+    client = client_for(server, thinking_tokens=3)
     assert client.generate("sys", "hi", "alpha:1b", temperature=0.5, max_tokens=7) == "Hello"
     body = server.last_request
     assert body["model"] == "alpha:1b" and body["stream"] is False
-    assert body["options"]["temperature"] == 0.5 and body["options"]["num_predict"] == 7
+    assert body["options"]["temperature"] == 0.5 and body["options"]["num_predict"] == 10
     assert [m["role"] for m in body["messages"]] == ["system", "user"]
 
 
 def test_default_temperature_and_output_limit_come_from_config(server) -> None:
-    client_for(server, temperature=0.1, max_output_tokens=33).generate("s", "p", "m")
+    client_for(server, temperature=0.1, max_output_tokens=33, thinking_tokens=0).generate(
+        "s", "p", "m"
+    )
     assert server.last_request["options"]["temperature"] == 0.1
     assert server.last_request["options"]["num_predict"] == 33
 
@@ -98,10 +100,18 @@ def test_think_blocks_are_removed(server) -> None:
     assert client_for(server).generate("s", "p", "m") == "Answer"
 
 
+def test_reasoning_is_requested_separately_and_never_returned(server) -> None:
+    server.chat_body = {"message": {"thinking": "Okay, let's see.", "content": "Answer"}}
+    assert client_for(server).generate("s", "p", "m") == "Answer"
+    assert server.last_request["think"] is True
+
+
 def test_model_without_think_support_is_retried(server) -> None:
     server.reject_think = True
-    assert client_for(server).generate("s", "p", "m") == "Hello"
+    client = client_for(server, max_output_tokens=33, thinking_tokens=100)
+    assert client.generate("s", "p", "m") == "Hello"
     assert "think" not in server.last_request
+    assert server.last_request["options"]["num_predict"] == 33
 
 
 def test_missing_model(server) -> None:

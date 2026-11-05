@@ -119,6 +119,9 @@ class OllamaClient:
     ) -> str:
         """Return the model's reply, raising OllamaError if there is no usable one."""
         config = self._config
+        output_tokens = max_tokens or config.max_output_tokens
+        # Some models ignore think=False and reason inside the reply. Asking for thinking
+        # makes Ollama return the reasoning in its own field, which is never used.
         body = {
             "model": model,
             "messages": [
@@ -126,10 +129,10 @@ class OllamaClient:
                 {"role": "user", "content": prompt},
             ],
             "stream": False,
-            "think": False,
+            "think": True,
             "options": {
                 "temperature": config.temperature if temperature is None else temperature,
-                "num_predict": max_tokens or config.max_output_tokens,
+                "num_predict": output_tokens + config.thinking_tokens,
                 "num_ctx": config.context_window_tokens,
             },
         }
@@ -137,6 +140,7 @@ class OllamaClient:
             response = self._post_chat(body)
             if response.status_code == 400 and "think" in response.text.lower():
                 del body["think"]
+                body["options"]["num_predict"] = output_tokens
                 response = self._post_chat(body)
         except requests.ConnectTimeout as exc:
             raise OllamaUnavailableError(
