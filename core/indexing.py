@@ -86,6 +86,12 @@ class DocumentIndexer:
         """Return a document's chunks in order, from a small in-memory cache."""
         return self._read_chunks(document_id)
 
+    def load_passage_vectors(self, document_id: str) -> np.ndarray | None:
+        """Return one stored vector per passage, in chunk order, or None if they are stale."""
+        passages = [p for chunk in self.load_chunks(document_id) for p in chunk.passages]
+        vectors = self._load_embeddings(document_id, _fingerprint(passages))
+        return vectors if vectors is not None and len(vectors) == len(passages) else None
+
     def _load_embeddings(self, document_id: str, fingerprint: str) -> np.ndarray | None:
         """Return stored embeddings if they match this model and exact passage text."""
         directory = self._dir(document_id)
