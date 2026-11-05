@@ -197,3 +197,67 @@ def _evidence(sentences: list[Sentence], pattern: re.Pattern[str], limit: int):
     return tuple(
         Evidence(s.text, s.page_number) for s in select_diverse(ranked, limit, min_score=-1.0)
     )
+
+
+class InsightsEngine:
+    def __init__(self, db: DatabaseManager, settings: Settings) -> None:
+        self._db = db
+        self._settings = settings
+
+    def analyze(self, document_id: str) -> DocumentInsights:
+        document = self._db.get_document(document_id)
+        if document is None or document.status is not DocumentStatus.READY:
+            raise InsightsError("This document has no extracted text to analyze.")
+        content = read_content(self._settings.paths, document_id)
+        pages = [page for page in content["pages"] if page["text"]]
+        texts = [page["text"] for page in pages]
+        sentences = document_sentences(pages)
+        config = self._settings.analysis
+        chunks = chunk_pages(document_id, pages, self._settings.chunking)
+        keywords = extract_keywords(texts, config.max_keywords)
+        words = document.word_count or 0
+        statistics = DocumentStatistics(
+            words=words,
+            characters=document.char_count or 0,
+            pages=document.page_count,
+            paragraphs=document.paragraph_count or 0,
+            chunks=document.chunk_count or len(chunks),
+            keywords=len(keywords),
+            reading_minutes=math.ceil(words / config.reading_words_per_minute),
+        )
+        return DocumentInsights(
+            document_id,
+            document.original_filename,
+            statistics,
+            tuple(
+                identify_topics(
+                    chunks, config.max_topics, config.terms_per_topic, config.sections_per_topic
+                )
+            ),
+            tuple(keywords),
+            tuple(extract_keyphrases(texts, config.max_keywords)),
+            tuple(
+                (k.term, k.count) for k in sorted(keywords, key=lambda k: (-k.count, k.term))
+            ),
+            find_names(sentences),
+            find_dates(sentences),
+            find_statistics(sentences),
+            self._important_sections(pages, content["blocks"]),
+            _evidence(sentences, CONCLUSION_PATTERN, _MAX_CONCLUSIONS),
+            _evidence(sentences, ACTION_PATTERN, _MAX_ACTIONS),
+        )
+
+    def _important_sections(
+        self, pages: list[dict[str, Any]], blocks: list[dict[str, Any]]
+    ) -> tuple[ImportantSection, ...]:
+        """Rank parts by how much of the document's key vocabulary each one contains."""
+        keywords = extract_keywords([page["text"] for page in pages], _SECTION_KEYWORDS)
+        total = sum(keyword.score for keyword in keywords) or 1.0
+        sections = []
+        for title, part in document_parts(pages, blocks):
+            words = set(re.findall(r"[\w'-]+", " ".join(p["text"] for p in part).lower()))
+            score = sum(k.score for k in keywords if k.term in words) / total
+            best = select_diverse(rank_sentences(document_sentences(part)), 1, min_score=-1.0)
+            if best:
+                sections.append(ImportantSection(title, score, best[0].text))
+        return tuple(sorted(sections, key=lambda s: -s.score)[:_MAX_SECTIONS])

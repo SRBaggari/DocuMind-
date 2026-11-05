@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from core.extractive import Sentence
 from core.insights import (
+    InsightsEngine,
+    InsightsError,
     find_dates,
     find_names,
     find_statistics,
@@ -20,6 +24,39 @@ REPORT = (
 
 def sentences(*texts: str, page: int | None = 2) -> list[Sentence]:
     return [Sentence(text, page, index) for index, text in enumerate(texts)]
+
+
+@pytest.fixture
+def insights(db, test_settings, ingestor):
+    document = ingestor.ingest("report.txt", REPORT.encode()).document
+    return InsightsEngine(db, test_settings).analyze(document.document_id)
+
+
+def test_statistics_match_the_document(insights, db) -> None:
+    document = db.get_document(insights.document_id)
+    stats = insights.statistics
+    assert stats.words == document.word_count and stats.characters == document.char_count
+    assert stats.paragraphs == 5 and stats.pages is None
+    assert stats.keywords == len(insights.keywords) and stats.chunks >= 1
+    assert stats.reading_minutes == 1
+
+
+def test_reading_time_rounds_up(db, test_settings, ingestor) -> None:
+    text = " ".join(["word"] * 201) + " end of the text."
+    document = ingestor.ingest("long.txt", text.encode()).document
+    assert InsightsEngine(db, test_settings).analyze(document.document_id).statistics.reading_minutes == 2
+
+
+def test_insights_are_copied_from_the_document(insights) -> None:
+    assert "Riverside Water Authority" in [name.text for name in insights.names]
+    assert "Maria Lopez" in [name.text for name in insights.names]
+    assert {"1 July 2024", "March 2024", "2028"} <= {date.text for date in insights.dates}
+    values = [item.value for item in insights.statistics_found]
+    assert "148 million dollars" in values and "3.1 percent" in values
+    assert any("stable" in item.text for item in insights.conclusions)
+    assert any("recommend" in item.text for item in insights.action_items)
+    for item in insights.statistics_found:
+        assert item.sentence in REPORT
 
 
 def test_sentence_start_words_are_not_names() -> None:
@@ -50,3 +87,14 @@ def test_plain_small_numbers_are_not_statistics() -> None:
 def test_currency_and_percent_statistics() -> None:
     values = {s.value for s in find_statistics(sentences("It cost $4.5 million, or 12% of 7,500 units."))}
     assert {"$4.5 million", "12%", "7,500 units"} <= values
+
+
+def test_document_without_text_is_refused(db, test_settings) -> None:
+    with pytest.raises(InsightsError):
+        InsightsEngine(db, test_settings).analyze("missing")
+
+
+def test_short_document_still_gives_insights(db, test_settings, ingestor) -> None:
+    document = ingestor.ingest("short.txt", b"Only one short sentence here.").document
+    result = InsightsEngine(db, test_settings).analyze(document.document_id)
+    assert result.themes == () and result.statistics.words == 5
