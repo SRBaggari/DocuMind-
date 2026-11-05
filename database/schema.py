@@ -62,6 +62,13 @@ class ChatMessage:
     created_at: str
 
 
+@dataclass(frozen=True)
+class Activity:
+    kind: str
+    summary: str
+    created_at: str
+
+
 MIGRATIONS: tuple[str, ...] = (
     """
     CREATE TABLE documents (
@@ -123,5 +130,20 @@ MIGRATIONS: tuple[str, ...] = (
         created_at      TEXT NOT NULL
     );
     CREATE INDEX idx_messages_conversation ON messages (conversation_id);
+    """,
+    # Activity rows name documents, so they are removed with the document.
+    """
+    CREATE TABLE activity (
+        activity_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind              TEXT NOT NULL,
+        summary           TEXT NOT NULL,
+        document_id       TEXT REFERENCES documents (document_id) ON DELETE CASCADE,
+        other_document_id TEXT REFERENCES documents (document_id) ON DELETE CASCADE,
+        created_at        TEXT NOT NULL
+    );
+    CREATE TABLE app_settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
     """,
 )

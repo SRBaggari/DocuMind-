@@ -12,6 +12,7 @@ from pathlib import Path
 
 from database.schema import (
     MIGRATIONS,
+    Activity,
     ChatMessage,
     DocumentRecord,
     DocumentStatus,
@@ -22,6 +23,7 @@ from utils.helpers import utc_now_iso
 
 _BUSY_TIMEOUT_SECONDS = 10.0
 _MAX_MESSAGES_PER_CONVERSATION = 200
+_MAX_ACTIVITY_ROWS = 200
 
 
 class DuplicateDocumentError(Exception):
@@ -226,6 +228,65 @@ class DatabaseManager:
             ChatMessage(row["role"], row["content"], json.loads(row["payload"]), row["created_at"])
             for row in rows
         ]
+
+    def log_activity(
+        self,
+        kind: str,
+        summary: str,
+        document_id: str | None = None,
+        other_document_id: str | None = None,
+    ) -> None:
+        """Record something the user did, keeping only the most recent rows."""
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO activity (kind, summary, document_id, other_document_id, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (kind, summary, document_id, other_document_id, utc_now_iso()),
+            )
+            connection.execute(
+                """
+                DELETE FROM activity WHERE activity_id NOT IN (
+                    SELECT activity_id FROM activity ORDER BY activity_id DESC LIMIT ?
+                )
+                """,
+                (_MAX_ACTIVITY_ROWS,),
+            )
+
+    def recent_activity(self, limit: int) -> list[Activity]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT kind, summary, created_at FROM activity
+                ORDER BY activity_id DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [Activity(row["kind"], row["summary"], row["created_at"]) for row in rows]
+
+    def clear_history(self) -> None:
+        """Delete every conversation and activity row."""
+        with self._connect() as connection:
+            connection.execute("DELETE FROM conversations")
+            connection.execute("DELETE FROM activity")
+
+    def get_setting(self, key: str) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT value FROM app_settings WHERE key = ?", (key,)
+            ).fetchone()
+        return row["value"] if row else None
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO app_settings (key, value) VALUES (?, ?)
+                ON CONFLICT (key) DO UPDATE SET value = excluded.value
+                """,
+                (key, value),
+            )
 
     def replace_chunks(
         self,
