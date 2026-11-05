@@ -185,6 +185,14 @@ class AnalysisConfig:
     terms_per_topic: int = 8
     sections_per_topic: int = 3
     similar_passage_threshold: float = 0.75
+    # A passage scoring below this against every passage of the other document is unique.
+    unique_passage_threshold: float = 0.5
+    # Sentences this close, ignoring figures, are treated as the same statement.
+    statement_match_threshold: float = 0.7
+    # Overall similarity is this share semantic, and the rest lexical.
+    semantic_weight: float = 0.7
+    comparison_list_limit: int = 10
+    heatmap_cells: int = 30
     reading_words_per_minute: int = 200
 
 
