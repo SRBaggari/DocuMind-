@@ -15,6 +15,7 @@ import pytest
 from config import Paths, Settings, ensure_directories
 from core.indexing import DocumentIndexer
 from core.ingestion import DocumentIngestor
+from core.ollama_client import OllamaStatus
 from core.retriever import Retriever
 from core.vector_store import VectorStore
 from database.db_manager import DatabaseManager
@@ -44,6 +45,25 @@ class HashingEmbedder:
 
     def embed_query(self, query: str) -> np.ndarray:
         return self._vector(query)
+
+
+class FakeLLM:
+    """Returns scripted replies and records prompts. Real-model tests are in test_llm_real.py."""
+
+    def __init__(self, reply: str | Exception | Callable[[str], str] = "A reply.") -> None:
+        self.reply = reply
+        self.prompts: list[str] = []
+        self.models: list[str] = []
+
+    def status(self) -> OllamaStatus:
+        return OllamaStatus(installed=True, running=True, version="test", models=("fake:1b",))
+
+    def generate(self, system, prompt, model, temperature=None, max_tokens=None) -> str:
+        self.prompts.append(prompt)
+        self.models.append(model)
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return self.reply(prompt) if callable(self.reply) else self.reply
 
 
 def _png_bytes() -> bytes:
