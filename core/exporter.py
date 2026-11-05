@@ -35,6 +35,10 @@ _UNSAFE_FILENAME = re.compile(r"[^\w.-]+")
 _FONT = "Vera"
 _FONT_BOLD = "VeraBd"
 _MAX_PDF_TEXT = 700
+_MISSING_GLYPHS_NOTE = (
+    "<b>Note:</b> this report's font cannot show some characters in these documents, "
+    "such as Chinese, Hindi or emoji. Use the app to read them."
+)
 
 
 def safe_filename(name: str) -> str:
@@ -63,13 +67,30 @@ def insights_json(insights: DocumentInsights) -> str:
 
 
 def _register_fonts() -> None:
-    """Use the Unicode fonts bundled with reportlab, because the built-in ones are Latin-1."""
+    """Use the fonts bundled with reportlab, which cover more than the built-in Latin-1 ones."""
     if _FONT in pdfmetrics.getRegisteredFontNames():
         return
     fonts = Path(reportlab.__file__).parent / "fonts"
     pdfmetrics.registerFont(TTFont(_FONT, str(fonts / "Vera.ttf")))
     pdfmetrics.registerFont(TTFont(_FONT_BOLD, str(fonts / "VeraBd.ttf")))
     registerFontFamily(_FONT, normal=_FONT, bold=_FONT_BOLD, italic=_FONT, boldItalic=_FONT_BOLD)
+
+
+def _has_missing_glyphs(comparison: Comparison) -> bool:
+    """Say whether the report contains characters its font cannot draw, such as Chinese."""
+    glyphs = pdfmetrics.getFont(_FONT).face.charToGlyph
+    texts = [comparison.filename_a, comparison.filename_b, comparison.summary]
+    for item in comparison.differences:
+        texts += [item.text_a, item.text_b]
+    for passage in comparison.similar_passages:
+        texts += [passage.text_a, passage.text_b]
+    texts += [item.text for item in comparison.unique_passages_a]
+    texts += [item.text for item in comparison.unique_passages_b]
+    return any(
+        ord(character) not in glyphs and not character.isspace()
+        for text in texts
+        for character in text
+    )
 
 
 def _clip(text: str) -> str:
@@ -99,6 +120,7 @@ def comparison_pdf(comparison: Comparison) -> bytes:
         Paragraph("Document comparison report", title),
         Paragraph(f"<b>Document A:</b> {name_a}<br/><b>Document B:</b> {name_b}", body),
         Spacer(1, 6),
+        *([Paragraph(_MISSING_GLYPHS_NOTE, body)] if _has_missing_glyphs(comparison) else []),
         Paragraph(escape(NOT_CORRECTNESS_NOTE), body),
         Paragraph("Similarity scores", heading),
     ]

@@ -15,6 +15,7 @@ from __future__ import annotations
 import difflib
 import logging
 import re
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -38,8 +39,8 @@ from database.schema import DocumentRecord, DocumentStatus, IndexStatus
 from utils.text_utils import (
     count_words,
     estimate_tokens,
-    extract_numbers,
     mask_numbers,
+    number_tokens,
     strip_instructions,
     unverified_numbers,
 )
@@ -51,6 +52,9 @@ NOT_CORRECTNESS_NOTE = (
 )
 _SHINGLE_WORDS = 5
 _NEAR_MATCH_RATIO = 0.9
+_SHARED_FIGURE_BONUS = 0.05
+_POSITION_PENALTY = 0.001
+_MAX_PAIR_CANDIDATES = 50
 _MIN_UNIQUE_WORDS = 12
 _BLOCK_ROWS = 1024
 _TOPIC_PRESENCE = 0.5
@@ -154,6 +158,8 @@ class Comparison:
     differences: tuple[StatementDifference, ...]
     grid: SimilarityGrid | None
     summary: str
+    difference_count: int = 0
+    numeric_difference_count: int = 0
     explanation: str | None = None
     explanation_model: str | None = None
     notices: tuple[str, ...] = ()
@@ -192,7 +198,8 @@ def shingle_overlap(text_a: str, text_b: str) -> float:
     """Return the Jaccard overlap of the two texts' five-word sequences."""
 
     def shingles(text: str) -> set[tuple[str, ...]]:
-        words = _WORD.findall(text.lower())
+        # Split on spaces, so "$500" and "€500" are not the same word.
+        words = text.lower().split()
         size = min(_SHINGLE_WORDS, len(words))
         return {tuple(words[i : i + size]) for i in range(len(words) - size + 1)} if size else set()
 
@@ -221,9 +228,9 @@ def _match_passages(a: np.ndarray, b: np.ndarray, cells: int) -> _Matches:
 
 
 def _match_kind(text_a: str, text_b: str) -> MatchKind:
-    left, right = _WORD.findall(text_a.lower()), _WORD.findall(text_b.lower())
-    if left == right:
+    if _exact_key(text_a) == _exact_key(text_b):
         return MatchKind.EXACT
+    left, right = _WORD.findall(text_a.lower()), _WORD.findall(text_b.lower())
     if difflib.SequenceMatcher(None, left, right, autojunk=False).ratio() >= _NEAR_MATCH_RATIO:
         return MatchKind.NEAR
     return MatchKind.SEMANTIC
@@ -293,72 +300,131 @@ def _changed_words(text_a: str, text_b: str) -> tuple[tuple[str, ...], tuple[str
     return tuple(only_a), tuple(only_b)
 
 
+def _exact_key(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def _without_exact_matches(
+    sentences_a: Sequence[Sentence], sentences_b: Sequence[Sentence]
+) -> tuple[list[Sentence], list[Sentence]]:
+    """Set aside sentences found word for word in both, so they cannot pair with others."""
+    remaining = Counter(_exact_key(sentence.text) for sentence in sentences_b)
+    left: list[Sentence] = []
+    for sentence in sentences_a:
+        key = _exact_key(sentence.text)
+        if remaining[key]:
+            remaining[key] -= 1
+        else:
+            left.append(sentence)
+    leftover = Counter(_exact_key(sentence.text) for sentence in sentences_a)
+    right: list[Sentence] = []
+    for sentence in sentences_b:
+        key = _exact_key(sentence.text)
+        if leftover[key]:
+            leftover[key] -= 1
+        else:
+            right.append(sentence)
+    return left, right
+
+
+def _pair_score(score: float, a: Sentence, b: Sentence, index_a: int, index_b: int, size: int) -> float:
+    """Break ties between sentences that read alike once their figures are hidden.
+
+    Shared figures come first, so "Revenue in 2023 was 90" pairs with its own year, and
+    then position in the document.
+    """
+    numbers_a, numbers_b = set(number_tokens(a.text)), set(number_tokens(b.text))
+    union = numbers_a | numbers_b
+    shared = len(numbers_a & numbers_b) / len(union) if union else 0.0
+    return score + _SHARED_FIGURE_BONUS * shared - _POSITION_PENALTY * abs(index_a - index_b) / size
+
+
+def _changed_figures(
+    numbers_a: list[str], numbers_b: list[str]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if len(numbers_a) == len(numbers_b):
+        pairs = [(a, b) for a, b in zip(numbers_a, numbers_b, strict=True) if a != b]
+        return tuple(a for a, _ in pairs), tuple(b for _, b in pairs)
+    only_a = Counter(numbers_a) - Counter(numbers_b)
+    only_b = Counter(numbers_b) - Counter(numbers_a)
+    return tuple(sorted(only_a.elements())), tuple(sorted(only_b.elements()))
+
+
 def statement_differences(
-    sentences_a: Sequence[Sentence],
-    sentences_b: Sequence[Sentence],
-    threshold: float,
-    limit: int,
+    sentences_a: Sequence[Sentence], sentences_b: Sequence[Sentence], threshold: float
 ) -> tuple[StatementDifference, ...]:
     """Pair sentences that make the same statement, and report those that differ.
 
     Figures are hidden while pairing, so "rose 3%" and "rose 5%" pair as one statement.
-    Stop words are kept, because "not" can reverse a statement.
+    Stop words are kept, because "not" can reverse a statement. Figures are compared in
+    order with their sign and currency, so swapped prices and "-5%" against "5%" count.
     """
-    if not sentences_a or not sentences_b:
+    left, right = _without_exact_matches(sentences_a, sentences_b)
+    if not left or not right:
         return ()
-    masked = [mask_numbers(s.text) for s in (*sentences_a, *sentences_b)]
+    masked = [mask_numbers(s.text) for s in (*left, *right)]
     try:
         matrix = TfidfVectorizer(token_pattern=r"(?u)\b\w+\b").fit_transform(masked)
     except ValueError:
         return ()
-    left, right = matrix[: len(sentences_a)], matrix[len(sentences_a) :]
+    vectors_a, vectors_b = matrix[: len(left)], matrix[len(left) :]
+    size = max(len(left), len(right))
 
     pairs: list[tuple[float, int, int]] = []
-    for start in range(0, left.shape[0], _BLOCK_ROWS):
-        block = (left[start : start + _BLOCK_ROWS] @ right.T).toarray()
-        partners = block.argmax(axis=1)
-        scores = block[np.arange(len(block)), partners]
-        pairs += [
-            (float(score), start + row, int(partner))
-            for row, (score, partner) in enumerate(zip(scores, partners, strict=True))
-            if score >= threshold
-        ]
+    for start in range(0, vectors_a.shape[0], _BLOCK_ROWS):
+        block = (vectors_a[start : start + _BLOCK_ROWS] @ vectors_b.T).toarray()
+        for row, scores in enumerate(block):
+            partners = np.flatnonzero(scores >= threshold)
+            if len(partners) > _MAX_PAIR_CANDIDATES:
+                best = np.argsort(-scores[partners], kind="stable")[:_MAX_PAIR_CANDIDATES]
+                partners = partners[best]
+            index_a = start + row
+            pairs += [
+                (
+                    _pair_score(float(scores[j]), left[index_a], right[j], index_a, int(j), size),
+                    index_a,
+                    int(j),
+                )
+                for j in partners
+            ]
 
     numeric: list[StatementDifference] = []
     wording: list[StatementDifference] = []
-    used: set[int] = set()
+    used_a: set[int] = set()
+    used_b: set[int] = set()
     for _, index_a, index_b in sorted(pairs, key=lambda pair: -pair[0]):
-        if index_b in used:
+        if index_a in used_a or index_b in used_b:
             continue
-        used.add(index_b)
-        a, b = sentences_a[index_a], sentences_b[index_b]
-        numbers_a, numbers_b = extract_numbers(a.text), extract_numbers(b.text)
+        used_a.add(index_a)
+        used_b.add(index_b)
+        a, b = left[index_a], right[index_b]
+        numbers_a, numbers_b = number_tokens(a.text), number_tokens(b.text)
         if numbers_a != numbers_b:
+            only_a, only_b = _changed_figures(numbers_a, numbers_b)
             numeric.append(
                 StatementDifference(
-                    DifferenceKind.NUMERIC,
-                    a.text,
-                    a.page_number,
-                    b.text,
-                    b.page_number,
-                    tuple(sorted(numbers_a - numbers_b)),
-                    tuple(sorted(numbers_b - numbers_a)),
+                    DifferenceKind.NUMERIC, a.text, a.page_number, b.text, b.page_number, only_a, only_b
                 )
             )
         elif _masked_words(a.text) != _masked_words(b.text):
             only_a, only_b = _changed_words(a.text, b.text)
             wording.append(
                 StatementDifference(
-                    DifferenceKind.WORDING,
-                    a.text,
-                    a.page_number,
-                    b.text,
-                    b.page_number,
-                    only_a,
-                    only_b,
+                    DifferenceKind.WORDING, a.text, a.page_number, b.text, b.page_number, only_a, only_b
                 )
             )
-    return tuple([*numeric, *wording][:limit])
+    return (*numeric, *wording)
+
+
+def format_percent(value: float | None) -> str:
+    """Show a score, never rounding a near match up to a claim of 100%."""
+    if value is None:
+        return "N/A"
+    if round(value, 4) >= 1:
+        return "100%"
+    if value >= 0.995:
+        return ">99%"
+    return "<1%" if 0 < value < 0.005 else f"{value * 100:.0f}%"
 
 
 def _words(text: str) -> set[str]:
@@ -373,17 +439,6 @@ def _term_presence(terms: Sequence[tuple[str, float]], words: set[str]) -> float
     total = sum(weight for _, weight in terms)
     found = sum(weight for term, weight in terms if _words(term) <= words)
     return found / total if total else 0.0
-
-
-def format_percent(value: float | None) -> str:
-    """Show a score, never rounding a near match up to a claim of 100%."""
-    if value is None:
-        return "N/A"
-    if round(value, 4) >= 1:
-        return "100%"
-    if value >= 0.995:
-        return ">99%"
-    return "<1%" if 0 < value < 0.005 else f"{value * 100:.0f}%"
 
 
 def _describe(comparison: Comparison) -> str:
@@ -404,11 +459,10 @@ def _describe(comparison: Comparison) -> str:
     if comparison.common_topics:
         labels = "; ".join(topic.label for topic in comparison.common_topics)
         lines.append(f"Shared topics: {labels}.")
-    differences = comparison.differences
-    numeric = sum(1 for item in differences if item.kind is DifferenceKind.NUMERIC)
-    if differences:
+    if comparison.difference_count:
         lines.append(
-            f"{len(differences)} matching statements differ, {numeric} of them in their figures."
+            f"{comparison.difference_count} matching statements differ, "
+            f"{comparison.numeric_difference_count} of them in their figures."
         )
     else:
         lines.append("No matching statements with different content were found.")
@@ -477,12 +531,12 @@ class DocumentComparator:
             notices.append("There is too little text to identify topics. Keywords are shown.")
         # Whole texts, because averaging over pages would make a paged document score lower.
         keywords = compare_keywords([a.text], [b.text], _KEYWORD_POOL)
-        differences = statement_differences(
+        all_differences = statement_differences(
             document_sentences(a.pages),
             document_sentences(b.pages),
             config.statement_match_threshold,
-            config.comparison_list_limit,
         )
+        differences = all_differences[: config.comparison_list_limit]
         comparison = Comparison(
             document_a=document_a,
             document_b=document_b,
@@ -499,6 +553,10 @@ class DocumentComparator:
             differences=differences,
             grid=grid,
             summary="",
+            difference_count=len(all_differences),
+            numeric_difference_count=sum(
+                item.kind is DifferenceKind.NUMERIC for item in all_differences
+            ),
         )
         summary = _describe(comparison)
         explanation = None
@@ -602,6 +660,10 @@ class DocumentComparator:
         reply = self._llm.generate(_SYSTEM_PROMPT, prompt, model, max_tokens=_EXPLANATION_TOKENS)
         missing = unverified_numbers(reply, source)
         warnings = []
+        if any(strip_instructions(fact)[1] for fact in facts):
+            warnings.append(
+                "Text that looked like instructions to the AI was left out of the explanation."
+            )
         if missing:
             warnings.append(
                 "These figures in the explanation are not in the comparison, so verify them: "

@@ -251,7 +251,6 @@ def test_negation_counts_as_a_difference() -> None:
         [sentence("The audit found the accounts were accurate this year.")],
         [sentence("The audit found the accounts were not accurate this year.")],
         0.7,
-        10,
     )
     assert found[0].kind is DifferenceKind.WORDING and found[0].only_b == ("not",)
 
@@ -261,7 +260,6 @@ def test_figures_are_compared_in_one_form() -> None:
         [sentence("Crews repaired 1,206 leaks in the network this year.")],
         [sentence("Crews repaired 1206 leaks in the network this year.")],
         0.7,
-        10,
     ) == ()
 
 
@@ -270,15 +268,68 @@ def test_each_sentence_is_paired_once() -> None:
         [sentence("Revenue reached 10 dollars."), sentence("Revenue reached 20 dollars.")],
         [sentence("Revenue reached 30 dollars.")],
         0.7,
-        10,
     )
     assert len(found) == 1
 
 
-def test_list_limit_is_applied() -> None:
-    left = [sentence(f"Station {w} recorded 1 fault today.", 1, i) for i, w in enumerate("abcdef")]
-    right = [sentence(f"Station {w} recorded 2 faults today.", 1, i) for i, w in enumerate("abcdef")]
-    assert len(statement_differences(left, right, 0.5, 3)) == 3
+def test_the_count_covers_differences_beyond_the_list_limit(comparator, add) -> None:
+    rows = [f"Station {name} recorded {{}} faults during the review period." for name in "abcdefghijklmnop"]
+    a = add("a.txt", "\n\n".join(row.format(n + 10) for n, row in enumerate(rows)))
+    b = add("b.txt", "\n\n".join(row.format(n + 500) for n, row in enumerate(rows)))
+    result = comparator.compare(a, b)
+    assert result.difference_count == 16 and len(result.differences) == 10
+    assert "16 matching statements differ" in result.summary
+
+
+def table_like(values: dict[str, int]) -> list[Sentence]:
+    return [
+        sentence(f"Revenue in {year} was {value} million dollars.", 1, index)
+        for index, (year, value) in enumerate(values.items())
+    ]
+
+
+def test_a_changed_figure_among_repeated_sentences_is_found() -> None:
+    years = {str(2010 + n): 50 + n for n in range(14)}
+    changed = {**years, "2023": 95, "2015": 3}
+    found = statement_differences(table_like(years), table_like(changed), 0.7)
+    assert sorted((d.only_a, d.only_b) for d in found) == [(("55",), ("3",)), (("63",), ("95",))]
+
+
+def test_reordered_or_extra_rows_invent_no_differences() -> None:
+    years = {str(2010 + n): 50 + n for n in range(14)}
+    rows = table_like(years)
+    assert statement_differences(rows, list(reversed(rows)), 0.7) == ()
+    extra = [sentence("Revenue in 2009 was 40 million dollars."), *rows]
+    assert statement_differences(rows, extra, 0.7) == ()
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("Basic costs 40 and Plus costs 90 per month.", "Basic costs 90 and Plus costs 40 per month."),
+        ("Margins moved by -5% during the year.", "Margins moved by 5% during the year."),
+        ("The licence fee is $500 for each site.", "The licence fee is €500 for each site."),
+        ("The error rate stayed < 5 during testing.", "The error rate stayed > 5 during testing."),
+    ],
+)
+def test_swaps_signs_and_currencies_are_differences(first, second) -> None:
+    found = statement_differences([sentence(first)], [sentence(second)], 0.7)
+    assert [d.kind for d in found] == [DifferenceKind.NUMERIC]
+
+
+def test_the_same_value_written_differently_is_no_difference() -> None:
+    assert statement_differences(
+        [sentence("The fee was 3.50 for every order placed.")],
+        [sentence("The fee was 3.5 for every order placed.")],
+        0.7,
+    ) == ()
+
+
+def test_sign_changes_are_not_called_the_same_wording(comparator, add) -> None:
+    text = "The licence fee is $500 for each site in the northern region this year."
+    result = comparator.compare(add("a.txt", text), add("b.txt", text.replace("$", "€")))
+    assert result.scores.exact < 1.0
+    assert all(p.kind is not MatchKind.EXACT for p in result.similar_passages)
 
 
 def test_matching_in_blocks_equals_the_full_matrix(monkeypatch) -> None:
