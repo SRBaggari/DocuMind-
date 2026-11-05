@@ -81,6 +81,16 @@ def test_uncited_answer_is_flagged_and_sources_marked_uncited(make, cats) -> Non
     assert all(not source.cited for source in answer.sources)
 
 
+def test_invented_figure_is_flagged(make, cats) -> None:
+    answerer, _ = make("They sleep for 18 hours on sofas [S1].")
+    assert any("18" in notice for notice in answerer.ask(QUESTION, model="m").notices)
+
+
+def test_answer_beyond_the_evidence_is_flagged(make, cats) -> None:
+    answerer, _ = make("Felines evolved nocturnal behaviour from desert ancestors [S1].")
+    assert any("beyond" in notice for notice in answerer.ask(QUESTION, model="m").notices)
+
+
 def test_pdf_answer_reports_the_right_page(make, indexed_ingestor, make_pdf) -> None:
     pages = ["Nothing relevant here today.", "", "Cats sleep on warm sofas."]
     indexed_ingestor.ingest("a.pdf", make_pdf(pages).read_bytes())

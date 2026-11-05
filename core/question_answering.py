@@ -1,7 +1,8 @@
 """Answer questions from retrieved document evidence, or say that there is none.
 
-Evidence is checked before the model runs, and its citations are checked after it.
-Every Answer records how it was produced.
+Small local models do not reliably follow rules, so nothing rests on the prompt alone:
+evidence is checked before the model runs, and citations, figures and wording are
+checked after it. Every Answer records how it was produced.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from core.ollama_client import LocalLLM, OllamaError
 from core.retriever import RetrievedChunk, Retriever
 from database.db_manager import DatabaseManager
 from database.schema import DocumentStatus
-from utils.text_utils import estimate_tokens
+from utils.text_utils import estimate_tokens, unverified_numbers
 
 logger = logging.getLogger("documind.qa")
 
@@ -44,6 +45,7 @@ _EXTRACTIVE_NOTICE = (
 _KEYWORD_MIN_SCORE = 0.05
 _RERANK_TERM_WEIGHT = 0.15
 _EXTRACTIVE_SENTENCES = 3
+_MIN_SUPPORTED_WORDS = 0.6
 _WORD = re.compile(r"[^\W\d_]{3,}")
 _CITATION = re.compile(r"\[\s*S(\d+)\s*\]")
 
@@ -165,10 +167,11 @@ class QuestionAnswerer:
 
     def _context(
         self, hits: Sequence[RetrievedChunk], sources: Sequence[Source]
-    ) -> tuple[str, tuple[Source, ...]]:
-        """Build the source block within budget, with the sources that fitted."""
+    ) -> tuple[str, str, tuple[Source, ...]]:
+        """Build the source block within budget, with its plain text and included sources."""
         budget = self._settings.ollama.qa_context_tokens
         blocks: list[str] = []
+        plain: list[str] = []
         included: list[Source] = []
         used = 0
         for hit, source in zip(hits, sources):
@@ -177,8 +180,9 @@ class QuestionAnswerer:
                 break
             used += size
             blocks.append(f'<source id="{source.label}">\n{hit.text}\n</source>')
+            plain.append(hit.text)
             included.append(source)
-        return "\n\n".join(blocks), tuple(included)
+        return "\n\n".join(blocks), "\n".join(plain), tuple(included)
 
     def _answer_with_llm(
         self,
@@ -188,7 +192,7 @@ class QuestionAnswerer:
         model: str,
         notices: list[str],
     ) -> Answer:
-        context, sources = self._context(hits, sources)
+        context, evidence, sources = self._context(hits, sources)
         prompt = f"{context}\n\n<question>\n{question}\n</question>"
         reply = self._llm.generate(_SYSTEM_PROMPT, prompt, model)
 
@@ -211,6 +215,20 @@ class QuestionAnswerer:
         checked = tuple(replace(source, cited=source.label in cited) for source in sources)
         if not cited:
             notices.append("The model did not cite a source, so check this against the evidence.")
+        missing = unverified_numbers(text, evidence)
+        if missing:
+            notices.append(
+                "These figures were not found in the sources, so verify them: "
+                + ", ".join(missing)
+            )
+        words = _content_words(_CITATION.sub("", text))
+        if words:
+            supported = len(words & _content_words(evidence)) / len(words)
+            if supported < _MIN_SUPPORTED_WORDS:
+                notices.append(
+                    "Much of this wording does not appear in the sources, so it may go "
+                    "beyond the evidence."
+                )
         return Answer(question, text, GenerationMethod.LLM, model, checked, tuple(notices))
 
     def _answer_extractively(
