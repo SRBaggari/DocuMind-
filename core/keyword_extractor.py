@@ -7,12 +7,14 @@ of a topic's top terms; they are generated and have not been reviewed by a perso
 from __future__ import annotations
 
 import re
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
 from sklearn.decomposition import NMF
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.feature_extraction.text import (
     ENGLISH_STOP_WORDS,
     CountVectorizer,
@@ -38,10 +40,17 @@ _LARGE_CORPUS_SEGMENTS = 10
 
 
 class ChunkLike(Protocol):
-    chunk_id: str
-    document_id: str
-    text: str
-    page_number: int | None
+    @property
+    def chunk_id(self) -> str: ...
+
+    @property
+    def document_id(self) -> str: ...
+
+    @property
+    def text(self) -> str: ...
+
+    @property
+    def page_number(self) -> int | None: ...
 
 
 @dataclass(frozen=True)
@@ -149,7 +158,7 @@ def _with_counts(
         )
     counts = np.asarray(counter.transform(segments).sum(axis=0)).ravel()
     return [
-        Keyword(term, score, int(count)) for (term, score), count in zip(ranked, counts)
+        Keyword(term, score, int(count)) for (term, score), count in zip(ranked, counts, strict=True)
     ]
 
 
@@ -234,7 +243,10 @@ def identify_topics(
         random_state=0,
         max_iter=_NMF_MAX_ITERATIONS,
     )
-    weights = model.fit_transform(matrix)
+    with warnings.catch_warnings():
+        # Stopping at the iteration limit still gives usable topics for large documents.
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        weights = model.fit_transform(matrix)
     terms = vectorizer.get_feature_names_out()
     dominant = weights.argmax(axis=1)
     total_weight = float(weights.sum()) or 1.0
