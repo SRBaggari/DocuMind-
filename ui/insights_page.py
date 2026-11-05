@@ -1,4 +1,4 @@
-"""Insights page. A functional page for Phase 5; Phase 6 replaces its layout."""
+"""Insights page."""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ import pandas as pd
 import streamlit as st
 
 from core.exporter import insights_json, keywords_csv, safe_filename
-from core.insights import DocumentInsights, Evidence, InsightsEngine, InsightsError, Mention
-from database.db_manager import DatabaseManager
+from core.insights import DocumentInsights, Evidence, InsightsError, Mention
 from database.schema import DocumentStatus
 from ui import charts
+from ui import components as ui
 
 _RESULT_KEY = "insights_result"
 _CHART_TERMS = 15
@@ -17,21 +17,21 @@ _CHART_TERMS = 15
 
 def _show_statistics(insights: DocumentInsights) -> None:
     stats = insights.statistics
-    tiles = (
-        ("Words", f"{stats.words:,}"),
-        ("Characters", f"{stats.characters:,}"),
-        ("Pages", "Not paged" if stats.pages is None else f"{stats.pages:,}"),
-        ("Paragraphs", f"{stats.paragraphs:,}"),
-        ("Chunks", f"{stats.chunks:,}"),
-        ("Keywords", f"{stats.keywords:,}"),
-        ("Reading time", f"{stats.reading_minutes} min"),
+    ui.stat_cards(
+        [
+            ("Words", f"{stats.words:,}"),
+            ("Characters", f"{stats.characters:,}"),
+            ("Pages", "N/A" if stats.pages is None else f"{stats.pages:,}"),
+            ("Paragraphs", f"{stats.paragraphs:,}"),
+            ("Chunks", f"{stats.chunks:,}"),
+            ("Keywords", f"{stats.keywords:,}"),
+            ("Reading time", f"{stats.reading_minutes} min"),
+        ]
     )
-    for column, (label, value) in zip(st.columns(len(tiles)), tiles):
-        column.metric(label, value)
 
 
 def _mention_table(title: str, mentions: tuple[Mention, ...]) -> None:
-    st.markdown(f"**{title}**")
+    ui.section_title(title)
     if not mentions:
         st.caption("None found.")
         return
@@ -50,35 +50,34 @@ def _mention_table(title: str, mentions: tuple[Mention, ...]) -> None:
     )
 
 
-def _show_evidence(title: str, items: tuple[Evidence, ...], empty: str) -> None:
-    st.markdown(f"#### {title}")
-    if not items:
-        st.caption(empty)
-    for item in items:
-        page = f" (p. {item.page})" if item.page else ""
-        st.markdown(f"- {item.text}{page}")
+def _evidence_card(key: str, title: str, items: tuple[Evidence, ...], empty: str) -> None:
+    with ui.card(key):
+        ui.section_title(title)
+        if not items:
+            st.caption(empty)
+        for item in items:
+            ui.quote(item.text, f"p. {item.page}" if item.page else None)
 
 
-def _show(insights: DocumentInsights) -> None:
-    _show_statistics(insights)
-    st.caption("Everything below is copied or calculated from the document. No AI model wrote it.")
-
-    st.markdown("#### Main themes")
+def _show_themes(insights: DocumentInsights) -> None:
     if insights.themes:
+        ui.section_title("Main themes")
         st.plotly_chart(charts.topic_distribution(insights.themes))
         for theme in insights.themes:
-            with st.expander(theme.label):
-                st.write(", ".join(term for term, _ in theme.terms))
+            with st.expander(ui.safe_markdown(theme.label)):
+                st.caption(ui.safe_markdown(", ".join(term for term, _ in theme.terms)))
                 for section in theme.sections:
-                    page = f"p. {section.page_number}: " if section.page_number else ""
-                    st.caption(f"{page}{section.snippet}")
+                    ui.quote(
+                        section.snippet,
+                        f"p. {section.page_number}" if section.page_number else None,
+                    )
         st.caption("Theme names are generated from important terms and are not reviewed labels.")
     else:
         st.caption("There is too little text to identify themes.")
 
-    st.markdown("#### Frequent terms")
     terms = insights.frequent_terms[:_CHART_TERMS]
     if terms:
+        ui.section_title("Frequent terms")
         st.plotly_chart(charts.keyword_frequency(terms))
         with st.expander("Keyword table"):
             st.dataframe(
@@ -90,17 +89,16 @@ def _show(insights: DocumentInsights) -> None:
                 ),
                 hide_index=True,
             )
-    else:
-        st.caption("No keywords found.")
 
+
+def _show_extracted(insights: DocumentInsights) -> None:
     left, right = st.columns(2)
     with left:
         _mention_table("Names", insights.names)
-        st.caption("Found from capitalization, so review them. They may include places or terms.")
+        st.caption("Found from capitalization, so they may include places or terms.")
     with right:
         _mention_table("Dates", insights.dates)
-
-    st.markdown("#### Numbers and statistics")
+    ui.section_title("Numbers and statistics")
     if insights.statistics_found:
         st.dataframe(
             pd.DataFrame(
@@ -114,44 +112,64 @@ def _show(insights: DocumentInsights) -> None:
     else:
         st.caption("None found.")
 
-    st.markdown("#### Important sections")
-    st.caption("Ranked by how much of the document's key vocabulary each section contains.")
-    for section in insights.important_sections:
-        st.markdown(f"**{section.title}**: {section.snippet}")
 
-    _show_evidence("Key conclusions", insights.conclusions, "No concluding statements found.")
-    _show_evidence(
-        "Potential action items", insights.action_items, "No recommended actions found."
-    )
+def _show_findings(insights: DocumentInsights) -> None:
+    with ui.card("sections"):
+        ui.section_title("Important sections")
+        st.caption("Ranked by how much of the document's key vocabulary each section contains.")
+        for section in insights.important_sections:
+            ui.quote(section.snippet, section.title)
+    _evidence_card("conclusions", "Key conclusions", insights.conclusions, "None found.")
+    _evidence_card("actions", "Potential action items", insights.action_items, "None found.")
+
+
+def _show(insights: DocumentInsights) -> None:
+    _show_statistics(insights)
+    st.caption("Everything here is copied or calculated from the document. No AI model wrote it.")
+    themes, extracted, findings = st.tabs(["Themes and keywords", "Names and figures", "Findings"])
+    with themes:
+        _show_themes(insights)
+    with extracted:
+        _show_extracted(insights)
+    with findings:
+        _show_findings(insights)
 
     name = safe_filename(insights.filename)
-    left, right = st.columns(2)
+    left, right, _ = st.columns([1, 1, 2])
     left.download_button(
-        "Download keywords as CSV",
+        "Keywords CSV",
         keywords_csv(insights.keywords, insights.keyphrases),
         file_name=f"{name}-keywords.csv",
         mime="text/csv",
+        icon=":material/download:",
+        width="stretch",
     )
     right.download_button(
-        "Download insights as JSON",
+        "Insights JSON",
         insights_json(insights),
         file_name=f"{name}-insights.json",
         mime="application/json",
+        icon=":material/download:",
+        width="stretch",
     )
 
 
-def render(db: DatabaseManager, engine: InsightsEngine) -> None:
-    st.subheader("Document insights")
-    documents = db.list_by_status(DocumentStatus.READY)
+def render(ctx: ui.AppContext) -> None:
+    ui.page_header("Insights", "Themes, names, figures and conclusions from one document.")
+    documents = ctx.db.list_by_status(DocumentStatus.READY)
     if not documents:
-        st.caption("Upload a document first.")
+        ui.no_documents()
         return
-    names = {doc.document_id: doc.original_filename for doc in documents}
-    document_id = st.selectbox("Document", list(names), format_func=names.get)
 
-    if st.button("Analyze document", type="primary"):
+    with ui.card("controls"):
+        document_id = ui.document_select("Document", documents, "insights_document")
+        run = st.button("Analyze document", type="primary", icon=":material/insights:")
+
+    if run:
         try:
-            st.session_state[_RESULT_KEY] = engine.analyze(document_id)
+            st.session_state[_RESULT_KEY] = ctx.services.insights.analyze(document_id)
+            name = st.session_state[_RESULT_KEY].filename
+            ctx.db.log_activity("insights", f"Analyzed {name}", document_id)
         except InsightsError as exc:
             st.session_state.pop(_RESULT_KEY, None)
             st.error(str(exc))

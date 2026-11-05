@@ -52,7 +52,7 @@ _PAGES: dict[str, Callable[[ui.AppContext], None]] = {
     "summarize": summary_page.render,
     "ask": chat_page.render,
     "compare": comparison_page.render,
-    "insights": lambda ctx: insights_page.render(ctx.db, ctx.services.insights),
+    "insights": insights_page.render,
     "settings": settings_page.render,
 }
 # Upload has no sidebar entry of its own, because it belongs to My Documents.
