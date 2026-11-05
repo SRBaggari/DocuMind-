@@ -10,7 +10,7 @@ _LIGATURES = str.maketrans(
 )
 # Zero-width joiners change how Persian and Indic text is written, and the marks
 # below set right-to-left text direction, so these format characters are kept.
-_KEPT_FORMAT_CHARS = frozenset("‌‍‎‏")
+_KEPT_FORMAT_CHARS = frozenset("\u200c\u200d\u200e\u200f")
 _KEPT_CONTROL_CHARS = frozenset("\n\t")
 
 _LINE_END_HYPHEN = re.compile(r"(?<=[^\W\d_])-\n(?=[^\W\d_A-Z])")
