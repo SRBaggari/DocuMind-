@@ -25,7 +25,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from config import Settings
 from core.chunker import chunk_pages
 from core.extractive import Sentence, document_sentences
-from core.indexing import DocumentIndexer, read_content
+from core.indexing import DocumentIndexer, StoredContentError, read_content
 from core.keyword_extractor import (
     KeywordComparison,
     compare_keywords,
@@ -256,7 +256,7 @@ def _unique_passages(
 ) -> tuple[UniquePassage, ...]:
     """List passages with nothing related in the other document, in reading order."""
     seen: set[str] = set()
-    candidates = []
+    candidates: list[tuple[int, UniquePassage]] = []
     for index in np.argsort(best, kind="stable"):
         text, page = passages[index]
         if best[index] >= threshold or len(candidates) == limit:
@@ -320,7 +320,7 @@ def statement_differences(
         scores = block[np.arange(len(block)), partners]
         pairs += [
             (float(score), start + row, int(partner))
-            for row, (score, partner) in enumerate(zip(scores, partners))
+            for row, (score, partner) in enumerate(zip(scores, partners, strict=True))
             if score >= threshold
         ]
 
@@ -386,10 +386,10 @@ def format_percent(value: float | None) -> str:
     return "<1%" if 0 < value < 0.005 else f"{value * 100:.0f}%"
 
 
-def _describe(comparison_parts: dict) -> str:
+def _describe(comparison: Comparison) -> str:
     """State the calculated results as plain sentences. No model is involved."""
-    scores: SimilarityScores = comparison_parts["scores"]
-    name_a, name_b = comparison_parts["filename_a"], comparison_parts["filename_b"]
+    scores = comparison.scores
+    name_a, name_b = comparison.filename_a, comparison.filename_b
     semantic = f"semantic {format_percent(scores.semantic)}, " if scores.semantic is not None else ""
     lines = [
         f"Overall similarity between {name_a} and {name_b} is {format_percent(scores.overall)} "
@@ -401,10 +401,10 @@ def _describe(comparison_parts: dict) -> str:
             f"{format_percent(scores.coverage_a)} of {name_a} has related content in {name_b}, and "
             f"{format_percent(scores.coverage_b)} of {name_b} has related content in {name_a}."
         )
-    common = comparison_parts["common_topics"]
-    if common:
-        lines.append("Shared topics: " + "; ".join(topic.label for topic in common) + ".")
-    differences = comparison_parts["differences"]
+    if comparison.common_topics:
+        labels = "; ".join(topic.label for topic in comparison.common_topics)
+        lines.append(f"Shared topics: {labels}.")
+    differences = comparison.differences
     numeric = sum(1 for item in differences if item.kind is DifferenceKind.NUMERIC)
     if differences:
         lines.append(
@@ -483,24 +483,24 @@ class DocumentComparator:
             config.statement_match_threshold,
             config.comparison_list_limit,
         )
-        scores = SimilarityScores(overall, semantic, lexical, exact, coverage_a, coverage_b)
-        parts = {
-            "document_a": document_a,
-            "document_b": document_b,
-            "filename_a": a.record.original_filename,
-            "filename_b": b.record.original_filename,
-            "scores": scores,
-            "common_topics": common,
-            "unique_topics_a": topics_a,
-            "unique_topics_b": topics_b,
-            "keywords": tuple(keywords),
-            "similar_passages": similar,
-            "unique_passages_a": unique_a,
-            "unique_passages_b": unique_b,
-            "differences": differences,
-            "grid": grid,
-        }
-        summary = _describe(parts)
+        comparison = Comparison(
+            document_a=document_a,
+            document_b=document_b,
+            filename_a=a.record.original_filename,
+            filename_b=b.record.original_filename,
+            scores=SimilarityScores(overall, semantic, lexical, exact, coverage_a, coverage_b),
+            common_topics=common,
+            unique_topics_a=topics_a,
+            unique_topics_b=topics_b,
+            keywords=tuple(keywords),
+            similar_passages=similar,
+            unique_passages_a=unique_a,
+            unique_passages_b=unique_b,
+            differences=differences,
+            grid=grid,
+            summary="",
+        )
+        summary = _describe(comparison)
         explanation = None
         if model:
             try:
@@ -509,8 +509,8 @@ class DocumentComparator:
             except OllamaError as exc:
                 logger.warning("LLM explanation failed: %s", type(exc).__name__)
                 notices.append(f"The local LLM could not be used: {exc}")
-        return Comparison(
-            **parts,
+        return replace(
+            comparison,
             summary=summary,
             explanation=explanation,
             explanation_model=model if explanation else None,
@@ -521,16 +521,20 @@ class DocumentComparator:
         document = self._db.get_document(document_id)
         if document is None or document.status is not DocumentStatus.READY:
             raise ComparisonError("Both documents need extracted text to be compared.")
-        pages = [p for p in read_content(self._settings.paths, document_id)["pages"] if p["text"]]
         passages: list[tuple[str, int | None]] = []
         vectors = None
-        if document.index_status is IndexStatus.INDEXED:
-            passages = [
-                (passage, chunk.page_number)
-                for chunk in self._indexer.load_chunks(document_id)
-                for passage in chunk.passages
-            ]
-            vectors = self._indexer.load_passage_vectors(document_id)
+        try:
+            content = read_content(self._settings.paths, document_id)
+            if document.index_status is IndexStatus.INDEXED:
+                passages = [
+                    (passage, chunk.page_number)
+                    for chunk in self._indexer.load_chunks(document_id)
+                    for passage in chunk.passages
+                ]
+                vectors = self._indexer.load_passage_vectors(document_id)
+        except StoredContentError as exc:
+            raise ComparisonError(f"{document.original_filename}: {exc}") from exc
+        pages = [page for page in content["pages"] if page["text"]]
         return _Side(document, pages, "\n".join(p["text"] for p in pages), passages, vectors)
 
     def _topics(

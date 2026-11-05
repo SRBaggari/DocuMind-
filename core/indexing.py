@@ -36,13 +36,23 @@ _EMBEDDINGS_META_FILENAME = "embeddings_meta.json"
 _CHUNK_CACHE_DOCUMENTS = 8
 
 
+class StoredContentError(Exception):
+    """A document's stored files are missing or unreadable. Safe to show to the user."""
+
+
+_MISSING_CONTENT = "This document's stored text is missing. Delete it and upload it again."
+
+
 def document_dir(paths: Paths, document_id: str) -> Path:
     return safe_child_path(paths.processed_dir, document_id)
 
 
 def read_content(paths: Paths, document_id: str) -> dict[str, Any]:
     path = document_dir(paths, document_id) / CONTENT_FILENAME
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise StoredContentError(_MISSING_CONTENT) from exc
 
 
 @dataclass(frozen=True)
@@ -79,8 +89,11 @@ class DocumentIndexer:
 
     def _read_chunks_file(self, document_id: str) -> tuple[Chunk, ...]:
         path = self._dir(document_id) / _CHUNKS_FILENAME
-        items = json.loads(path.read_text(encoding="utf-8"))
-        return tuple(Chunk(**{**item, "passages": tuple(item["passages"])}) for item in items)
+        try:
+            items = json.loads(path.read_text(encoding="utf-8"))
+            return tuple(Chunk(**{**item, "passages": tuple(item["passages"])}) for item in items)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise StoredContentError(_MISSING_CONTENT) from exc
 
     def load_chunks(self, document_id: str) -> tuple[Chunk, ...]:
         """Return a document's chunks in order, from a small in-memory cache."""
@@ -161,12 +174,19 @@ class DocumentIndexer:
     def index_unindexed(self, progress: ProgressCallback | None = None) -> int:
         """Index documents whose indexing is outstanding. Returns how many succeeded."""
         documents = self._db.list_unindexed()
+        indexed = 0
         for position, document in enumerate(documents):
-            pages = read_content(self._settings.paths, document.document_id)["pages"]
+            try:
+                pages = read_content(self._settings.paths, document.document_id)["pages"]
+            except StoredContentError as exc:
+                # One damaged document must not stop the others.
+                self._db.clear_index_state(document.document_id, IndexStatus.FAILED, str(exc))
+                continue
             self.index_document(document.document_id, pages)
+            indexed += 1
             if progress:
                 progress((position + 1) / len(documents))
-        return len(documents)
+        return indexed
 
     def reconcile(self) -> ReconcileReport:
         """Make the index match SQLite. Needs no model, so it is safe at startup."""

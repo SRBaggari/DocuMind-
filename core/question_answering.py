@@ -25,7 +25,7 @@ from core.extractive import (
     rank_sentences,
     select_diverse,
 )
-from core.indexing import read_content
+from core.indexing import StoredContentError, read_content
 from core.ollama_client import LocalLLM, OllamaError
 from core.retriever import RetrievedChunk, Retriever
 from database.db_manager import DatabaseManager
@@ -225,7 +225,7 @@ class QuestionAnswerer:
         included: list[Source] = []
         used = 0
         injected = False
-        for hit, source in zip(hits, sources):
+        for hit, source in zip(hits, sources, strict=True):
             text, removed = strip_instructions(hit.text)
             text = _SOURCE_TAG.sub(" ", text)
             injected = injected or removed
@@ -303,7 +303,7 @@ class QuestionAnswerer:
     ) -> Answer:
         references: dict[int, str] = {}
         sentences: list[Sentence] = []
-        for hit, source in zip(hits, sources):
+        for hit, source in zip(hits, sources, strict=True):
             page = {"number": hit.page_number, "text": hit.text}
             for sentence in document_sentences([page]):
                 if all(sentence.text != other.text for other in sentences):
@@ -342,7 +342,11 @@ class QuestionAnswerer:
                 continue
             if allowed is not None and document.document_id not in allowed:
                 continue
-            pages = read_content(self._settings.paths, document.document_id)["pages"]
+            try:
+                pages = read_content(self._settings.paths, document.document_id)["pages"]
+            except StoredContentError:
+                logger.warning("Stored text missing for document %s", document.document_id)
+                continue
             for chunk in chunk_pages(document.document_id, pages, _keyword_config(config)):
                 chunks.append(
                     RetrievedChunk(

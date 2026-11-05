@@ -25,7 +25,7 @@ from core.extractive import (
     rank_sentences,
     select_diverse,
 )
-from core.indexing import read_content
+from core.indexing import StoredContentError, read_content
 from core.keyword_extractor import (
     Keyword,
     Topic,
@@ -208,7 +208,10 @@ class InsightsEngine:
         document = self._db.get_document(document_id)
         if document is None or document.status is not DocumentStatus.READY:
             raise InsightsError("This document has no extracted text to analyze.")
-        content = read_content(self._settings.paths, document_id)
+        try:
+            content = read_content(self._settings.paths, document_id)
+        except StoredContentError as exc:
+            raise InsightsError(str(exc)) from exc
         pages = [page for page in content["pages"] if page["text"]]
         texts = [page["text"] for page in pages]
         sentences = document_sentences(pages)

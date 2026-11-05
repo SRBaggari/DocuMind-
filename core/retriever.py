@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from config import RetrievalConfig
 from core.embedding_engine import Embedder
-from core.indexing import DocumentIndexer
+from core.indexing import DocumentIndexer, StoredContentError
 from core.vector_store import VectorStore
 from database.db_manager import DatabaseManager
 
@@ -85,7 +85,11 @@ class Retriever:
             if row.document_id not in filenames:
                 document = self._db.get_document(row.document_id)
                 filenames[row.document_id] = document.original_filename if document else ""
-            chunk = self._indexer.load_chunks(row.document_id)[row.chunk_index]
+            try:
+                chunk = self._indexer.load_chunks(row.document_id)[row.chunk_index]
+            except (StoredContentError, IndexError):
+                logger.warning("Stored chunks unusable for document %s", row.document_id)
+                continue
             results.append(
                 RetrievedChunk(
                     chunk_id=row.chunk_id,

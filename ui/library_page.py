@@ -7,7 +7,7 @@ import math
 import streamlit as st
 
 from core.embedding_engine import EmbeddingModelError
-from core.indexing import read_content
+from core.indexing import StoredContentError, read_content
 from database.schema import DocumentRecord, DocumentStatus, IndexStatus
 from ui import components as ui
 from utils.helpers import format_size, format_timestamp
@@ -57,7 +57,12 @@ def _meta(document: DocumentRecord) -> str:
 
 
 def _delete(ctx: ui.AppContext, document_id: str) -> None:
-    ctx.services.ingestor.delete(document_id)
+    try:
+        ctx.services.ingestor.delete(document_id)
+    except OSError:
+        st.session_state.pop(_CONFIRM_DELETE_KEY, None)
+        st.toast("This file is in use by another program. Close it and try again.")
+        return
     st.session_state.pop(_CONFIRM_DELETE_KEY, None)
     st.session_state.pop(ui.OPEN_DOCUMENT_KEY, None)
     if st.session_state.get(ui.ACTIVE_DOCUMENT_KEY) == document_id:
@@ -164,6 +169,7 @@ def _show_detail(ctx: ui.AppContext, document: DocumentRecord) -> None:
             ("Compare", ":material/compare_arrows:", "compare"),
             ("View insights", ":material/insights:", "insights"),
         ),
+        strict=True,
     ):
         column.button(
             label,
@@ -174,7 +180,11 @@ def _show_detail(ctx: ui.AppContext, document: DocumentRecord) -> None:
             args=(page, document.document_id),
         )
 
-    pages = read_content(ctx.services.ingestor.paths, document.document_id)["pages"]
+    try:
+        pages = read_content(ctx.services.ingestor.paths, document.document_id)["pages"]
+    except StoredContentError as exc:
+        st.error(str(exc))
+        return
     text = "\n\n".join(page["text"] for page in pages if page["text"])
     with ui.card("preview"):
         ui.section_title("Text preview")
