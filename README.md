@@ -164,6 +164,95 @@ DocuMind/
 └── data/                  Your documents and indexes (not tracked by git)
 ```
 
+## Installation
+
+You need Windows 10 or 11, Python 3.12 and about 3 GB of free disk space. A laptop with 16 GB of memory is recommended if you use a local LLM.
+
+### Python environment setup
+
+Open PowerShell in the project folder and create a virtual environment:
+
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\Activate.ps1
+```
+
+If the project is in a cloud-synced folder such as OneDrive, keep the environment outside it so its files are not synced. `run.bat` finds this location automatically:
+
+```powershell
+py -3.12 -m venv "$env:LOCALAPPDATA\DocuMind\.venv"
+& "$env:LOCALAPPDATA\DocuMind\.venv\Scripts\Activate.ps1"
+```
+
+### Dependency installation
+
+```powershell
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+The embedding model (about 90 MB) downloads from Hugging Face the first time it is needed, then runs from the local cache. That download contains no document data, and it is the only time DocuMind needs the internet.
+
+### Ollama installation (optional)
+
+DocuMind works without Ollama, in extractive mode. For AI-written summaries and answers:
+
+1. Download and install Ollama from [ollama.com/download](https://ollama.com/download).
+2. Start the Ollama app. It runs a service on this computer only.
+
+### Local model download
+
+Download a model, for example:
+
+```powershell
+ollama pull gemma3:4b
+```
+
+Then open **Settings** in DocuMind and choose it. `gemma3:4b` performed best in testing. The default setting is `qwen2.5:3b`, which was not tested, so DocuMind stays in extractive mode until a model is chosen or the default is installed.
+
+### Model comparison
+
+Choose any installed model in Settings. Your choice is saved. If none is available, or a model fails, DocuMind uses extractive mode and says so. The default model `qwen2.5:3b` was not installed on the test machine, so these three were measured instead, on 8 questions over 4 test documents on the development laptop:
+
+| Model | Correct | Cited | Mean answer time | Notes |
+| --- | --- | --- | --- | --- |
+| `gemma3:4b` | 8 of 8 | 8 of 8 | 4 s | Best overall. A 36-page PDF took about 8 minutes to summarize |
+| `qwen3:4b` | 8 of 8 | 8 of 8 | 41 s | Reasoning is slow. It can use up its output limit, which falls back to extractive |
+| `llama3.2:3b` | 7 of 8 | 8 of 8 | 2 s | Fastest, with terse answers |
+
+All three refused 3 of 3 questions the documents could not answer, and all three ignored an injected instruction.
+
+## How to run the application
+
+On Windows, double-click `run.bat`. It checks Python and the required packages, then starts DocuMind in your browser.
+
+To start it manually, with the virtual environment active:
+
+```powershell
+streamlit run app.py
+```
+
+DocuMind opens at `http://localhost:8501` and is only reachable from this computer.
+
+## How to run tests
+
+```powershell
+pip install -r requirements-dev.txt
+pytest
+```
+
+Test documents are generated during the run. Tests that need the embedding model or Ollama are skipped if they are not available. Set `DOCUMIND_TEST_MODEL` to choose the local model they use.
+
+## Supported document formats
+
+| Format | Notes |
+| --- | --- |
+| PDF (`.pdf`) | Page numbers are preserved. Scanned PDFs are detected, but need OCR before upload. Password-protected PDFs must be unlocked first. |
+| Word (`.docx`) | Headings, paragraphs and tables are read. Older `.doc` files must be saved as `.docx`. |
+| Text (`.txt`) | UTF-8, UTF-16 and common Windows encodings are read. |
+
+The size limit is 50 MB per file.
+
 ## Performance
 
 Two 1,000-page PDFs (720,000 words in total) on the development laptop, with the real embedding model:
