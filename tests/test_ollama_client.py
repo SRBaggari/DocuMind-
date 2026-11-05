@@ -142,6 +142,18 @@ def test_service_down() -> None:
         client.generate("s", "p", "m")
 
 
+def test_client_ignores_environment_proxies(monkeypatch, server) -> None:
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:9")
+    assert client_for(server).generate("s", "p", "m") == "Hello"
+
+
+def test_redirects_are_not_followed(server) -> None:
+    server.chat_status = 302
+    with pytest.raises(OllamaError, match="302"):
+        client_for(server).generate("s", "p", "m")
+
+
 def test_remote_urls_are_refused() -> None:
     with pytest.raises(ValueError):
         validate_local_url("https://api.example.com")

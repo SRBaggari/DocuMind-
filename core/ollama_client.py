@@ -83,6 +83,8 @@ class OllamaClient:
     def __init__(self, config: OllamaConfig) -> None:
         self._config = config
         self._session = requests.Session()
+        # Environment proxies must never see document text bound for localhost.
+        self._session.trust_env = False
 
     @property
     def default_model(self) -> str:
@@ -92,6 +94,7 @@ class OllamaClient:
         response = self._session.get(
             f"{self._config.base_url}{path}",
             timeout=self._config.connect_timeout_seconds,
+            allow_redirects=False,
         )
         response.raise_for_status()
         return response.json()
@@ -170,4 +173,5 @@ class OllamaClient:
             f"{self._config.base_url}/api/chat",
             json=body,
             timeout=(self._config.connect_timeout_seconds, self._config.generate_timeout_seconds),
+            allow_redirects=False,
         )
