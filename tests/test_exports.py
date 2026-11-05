@@ -14,6 +14,7 @@ from core.document_comparator import DocumentComparator
 from core.exporter import comparison_pdf, insights_json, keywords_csv, safe_filename
 from core.insights import InsightsEngine
 from core.keyword_extractor import Keyword
+from core.summarizer import Summarizer, SummaryMode
 
 REPORT = (
     "The Riverside Water Authority serves 410,000 residents across three counties.\n\n"
@@ -41,6 +42,15 @@ def test_insights_json_round_trips(insights) -> None:
     assert data["filename"] == "report.txt"
     assert data["statistics"]["words"] == insights.statistics.words
     assert data["names"][0]["text"]
+
+
+def test_summary_text_export_states_the_method(db, test_settings, indexed_ingestor) -> None:
+    document = indexed_ingestor.ingest("report.txt", REPORT.encode()).document
+    summary = Summarizer(db, FakeLLM(), test_settings).summarize(
+        document.document_id, SummaryMode.QUICK, use_llm=False
+    )
+    text = summary.to_text()
+    assert summary.method_label in text and "OVERVIEW" in text and "##" not in text
 
 
 @pytest.mark.parametrize(
