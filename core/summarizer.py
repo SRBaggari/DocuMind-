@@ -152,15 +152,22 @@ def _neutralize(text: str) -> str:
 
 
 def _parse_sections(reply: str, mode: SummaryMode) -> tuple[SummarySection, ...]:
-    """Split a reply at its headings. A reply without headings stays one section."""
+    """Split a reply at its headings. A reply without headings stays one section.
+
+    Small models sometimes restart the outline or copy its hints, so a repeated heading
+    ends the reply and a copied hint is dropped.
+    """
     expected = {title.lower(): title for title, _ in _MODE_SECTIONS[mode]}
+    hints = {f"({hint})" for _, hint in _MODE_SECTIONS[mode]}
     sections: list[tuple[str, list[str]]] = []
     for line in reply.splitlines():
         match = _HEADING.match(line)
         title = match["title"].strip().rstrip(":") if match else ""
         if title.lower() in expected:
+            if any(expected[title.lower()] == name for name, _ in sections):
+                break
             sections.append((expected[title.lower()], []))
-        elif sections:
+        elif sections and line.strip() not in hints:
             sections[-1][1].append(line)
     parsed = [
         SummarySection(title, "\n".join(body).strip() or NOT_STATED) for title, body in sections

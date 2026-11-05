@@ -50,6 +50,23 @@ def test_bold_headings_are_understood(db, test_settings, document) -> None:
     assert [s.title for s in summary.sections] == ["Overview", "Main Purpose"]
 
 
+def test_repeated_outline_is_not_shown_twice(db, test_settings, document) -> None:
+    reply = f"{QUICK_REPLY}\n\n## Overview\nStarting again."
+    summary = summarizer_with(db, test_settings, FakeLLM(reply)).summarize(
+        document.document_id, SummaryMode.QUICK, model="m"
+    )
+    assert [section.title for section in summary.sections].count("Overview") == 1
+    assert "Starting again" not in summary.to_markdown()
+
+
+def test_copied_outline_hints_are_dropped(db, test_settings, document) -> None:
+    reply = "## Main Purpose\n(one sentence on why the document exists)\n\n## Overview\nWater."
+    summary = summarizer_with(db, test_settings, FakeLLM(reply)).summarize(
+        document.document_id, SummaryMode.QUICK, model="m"
+    )
+    assert summary.sections[0].content == NOT_STATED
+
+
 def test_reply_without_headings_is_kept_whole(db, test_settings, document) -> None:
     summary = summarizer_with(db, test_settings, FakeLLM("Plain paragraph.")).summarize(
         document.document_id, SummaryMode.QUICK, model="m"
