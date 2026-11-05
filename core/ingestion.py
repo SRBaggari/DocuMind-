@@ -181,7 +181,11 @@ class DocumentIngestor:
         return "Processed and indexed successfully."
 
     def _fail(self, record: DocumentRecord, extension: str, message: str) -> IngestResult:
-        self._remove_files(record.document_id, extension)
+        try:
+            self._remove_files(record.document_id, extension)
+        except OSError:
+            # Antivirus or a sync client can hold a new file briefly. The failure still counts.
+            logger.warning("Could not remove files of failed document %s", record.document_id)
         self._db.complete_document(
             record.document_id, DocumentStatus.FAILED, utc_now_iso(), status_message=message
         )

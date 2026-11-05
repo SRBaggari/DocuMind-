@@ -129,7 +129,8 @@ def _extract_pdf_page(page: Any, number: int, config: IngestionConfig) -> Page:
 def load_pdf(path: Path, config: IngestionConfig) -> ExtractedDocument:
     pymupdf = _import_pymupdf()
     try:
-        pdf = pymupdf.open(path, filetype="pdf")
+        # Opened from memory: after a failed open MuPDF can keep a file locked on Windows.
+        pdf = pymupdf.open(stream=path.read_bytes(), filetype="pdf")
     except Exception as exc:
         raise CorruptedFileError("This PDF is corrupted and could not be opened.") from exc
 
