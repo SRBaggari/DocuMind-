@@ -2,7 +2,7 @@
 
 DocuMind is a standalone application for understanding documents: upload PDF, DOCX or TXT files, then summarize them, ask questions, extract key information and compare them. All AI processing runs on your own computer. It needs no API keys or cloud accounts.
 
-> **Status: Phase 6 (interface).** Every page works and is connected to the real backend, with a local LLM through Ollama or without one. Open Settings to choose a local model. The full README is written in Phase 8.
+> **Status: Phase 7 (quality assurance).** Every page works and is connected to the real backend, with a local LLM through Ollama or without one. Open Settings to choose a local model. The full README is written in Phase 8.
 
 ## Architecture
 
@@ -110,6 +110,29 @@ Choose any installed model in the sidebar. If none is available, or a model fail
 | `llama3.2:3b` | 7 of 8 | 8 of 8 | 2 s | Fastest, with terse answers |
 
 All three refused 3 of 3 questions the documents could not answer, and all three ignored an injected instruction.
+
+## Measured performance
+
+Two 1,000-page PDFs (720,000 words in total) on the development laptop, with the real embedding model:
+
+| Operation | Result |
+| --- | --- |
+| Upload and index one document | About 65 s, or about 5,500 words per second |
+| Search | About 27 ms per question |
+| Compare the two documents | About 20 s |
+| Insights | About 8 s |
+| Startup check of the index | 0.03 s |
+| Peak memory | 1.44 GB, not counting Ollama |
+
+At that rate, a file holding millions of words takes tens of minutes to index, and the page waits while it does.
+
+## Known limits
+
+- **Prompt injection cannot be fully prevented.** Text that looks like instructions is removed and the rules are repeated after the sources. In testing, answers resisted 23 of 24 attacks across three models. The failure was a false "correction" written as ordinary content, which a filter cannot tell from a real statement. Sources are always shown next to the answer so this can be checked.
+- **Comparison reads sentences**, so a changed figure inside a table is not reported as a numeric difference.
+- **Names, dates and figures come from patterns**, not a trained model, and spelled-out numbers are not matched to digits.
+- **Scanned PDFs need OCR first.** DocuMind detects them and says so, but does not run OCR.
+- **Stop words and thresholds are tuned on English test documents**, so other languages get weaker results.
 
 ## Configuration
 
