@@ -52,6 +52,15 @@ class EmbeddingEngine:
     def is_loaded(self) -> bool:
         return self._model is not None
 
+    @property
+    def is_downloaded(self) -> bool:
+        """Say whether the model is on this computer, without loading it."""
+        try:
+            from huggingface_hub import try_to_load_from_cache
+        except ImportError:
+            return False
+        return isinstance(try_to_load_from_cache(self._config.model_name, "config.json"), str)
+
     def _load(self) -> Any:
         with self._lock:
             if self._model is None:
