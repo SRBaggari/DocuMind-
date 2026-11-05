@@ -253,6 +253,50 @@ Test documents are generated during the run. Tests that need the embedding model
 
 The size limit is 50 MB per file.
 
+## Screenshots
+
+**Summaries**
+
+![A quick summary](assets/screenshots/summary.png)
+
+**Document chat**
+
+![An answer with its sources](assets/screenshots/chat.png)
+
+**Comparison**
+
+![Differences between two documents](assets/screenshots/compare.png)
+
+**Insights**
+
+![Document insights](assets/screenshots/insights.png)
+
+## Troubleshooting
+
+| Problem | What to do |
+| --- | --- |
+| `py -3.12` says no suitable runtime | Run `py --list` and use the tag it shows, for example `py -V:Astral/CPython3.12.14 -m venv .venv`. |
+| PowerShell blocks `Activate.ps1` | Run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`, then try again. |
+| `run.bat` says Python was not found | Install Python 3.12 from python.org and tick "Add python.exe to PATH". |
+| `run.bat` says packages are missing | Activate the environment and run `pip install -r requirements.txt`. |
+| The port is already in use | Run `run.bat --server.port 8502`. |
+| Settings says Ollama is not running | Start the Ollama app, then choose **Check again**. |
+| No model is listed in Settings | Run `ollama pull gemma3:4b`, then choose **Check again**. |
+| Answers say "Extractive NLP" | No local model is selected. Choose one in Settings. |
+| A document is "Not indexed" | The embedding model could not load. Connect to the internet once, then choose **Index now** in My Documents. |
+| A PDF says OCR is needed | It contains images of text. Run OCR on it in another tool, then upload the result. |
+| A summary takes a long time | Long documents are read in parts, which can take several minutes. `gemma3:4b` is much faster than `qwen3:4b`. |
+
+## Privacy and offline processing
+
+- **Your documents stay on this computer.** Files, extracted text, indexes and chat history are stored locally.
+- **There are no accounts, API keys or telemetry.** Streamlit's usage statistics are turned off.
+- **DocuMind listens on this computer only**, and it refuses an Ollama address that points anywhere else.
+- **Pages load nothing from the web.** They use system fonts and local files, and images or links inside documents are shown as plain text, so your browser does not contact them.
+- **The one download is the embedding model**, on first use. It contains no document data.
+- **Cloud-synced folders are avoided.** If the project is inside OneDrive, Dropbox, Google Drive or iCloud, data is stored in `%LOCALAPPDATA%\DocuMind\data` instead, so documents are not synced to those services.
+- **You can erase everything.** **Clear all application data** in Settings deletes every document, index and chat.
+
 ## Performance
 
 Two 1,000-page PDFs (720,000 words in total) on the development laptop, with the real embedding model:
@@ -275,6 +319,15 @@ At that rate, a file holding millions of words takes tens of minutes to index, a
 - **Names, dates and figures come from patterns**, not a trained model, and spelled-out numbers are not matched to digits.
 - **Scanned PDFs need OCR first.** DocuMind detects them and says so, but does not run OCR.
 - **Stop words and thresholds are tuned on English test documents**, so other languages get weaker results.
+
+## Future enhancements
+
+- OCR for scanned PDFs.
+- Comparing figures inside tables.
+- Better recognition of names and dates with a trained local model.
+- Background indexing, so very large files do not hold up the page.
+- Support for more file types, such as PowerPoint and HTML.
+- Dark mode and better support for screen readers.
 
 ## Configuration
 
