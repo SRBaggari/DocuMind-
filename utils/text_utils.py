@@ -17,15 +17,33 @@ _ABBREVIATIONS = frozenset(
 _NUMBER = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?")
 _INJECTION = re.compile(
     r"\b(ignore|disregard|forget|override)\b.{0,40}\b(instructions?|rules?|prompts?|above|"
-    r"previous)\b|\byou are now\b|\bsystem prompt\b|\bnew instructions?\b"
-    # Requests aimed at a model, however politely they are worded.
-    r"|\b(?:assistant|chatbot|language model|ai model)\s*[,:]"
-    r"|^\W*(?:system|assistant|developer|administrator)\s*:"
-    r"|\b(?:reply|respond|answer|say|print|output)\b.{0,50}"
-    r"\b(?:only|nothing else|every question|any question|single word|exactly)\b"
-    r"|\byour (?:only|new|next) (?:reply|response|answer|task|job|role)\b"
-    r"|\bnew task\b",
+    r"previous)\b"
+    r"|\bsystem prompt\b"
+    r"|\bnew instructions?\s*:"
+    r"|\bnew task\s*(?:from|:)"
+    r"|\byou are now (?:an? |the )?(?:ai|assistant|chatbot|model|unrestricted|jailbroken)\b"
+    # A short role change, such as "You are now a pirate."
+    r"|^\W*you are now (?:an? |the )\w+\W*$"
+    r"|\b(?:assistant|chatbot|language model|ai model)\s*[,:]\s*"
+    r"(?:you|please|ignore|reply|respond|answer|it is)\b"
+    r"|\byour only (?:reply|response|answer)\b"
+    # A command at the start of a sentence, or a request put to "you".
+    r"|^\W*(?:reply|respond|answer|say|print|output)\s+(?:only\b|with\b|the word\b|exactly\b)"
+    r"|\b(?:please|you must|you should|you are to|that you)\s+(?:reply|respond|answer|say|print|"
+    r"output)\b.{0,50}\b(?:only|nothing else|every question|any question|single word|exactly)\b",
     re.IGNORECASE,
+)
+_BULLET_ONLY = re.compile(r"\s*[•▪◦·∙‣●○■□\-–*]*\s*")
+_LETTER_SPACED = re.compile(r"(?:\b[A-Z]{1,2} ){4,}")
+_EXTRA_BLANK_LINES = re.compile(r"\n{3,}")
+# Case matters here: "System: Windows 11" is a fact, and "SYSTEM:" imitates a chat role.
+_ROLE_PREFIX = re.compile(r"^\W*(?:SYSTEM|ASSISTANT|DEVELOPER)\s*:")
+_UNIT_DIGIT = re.compile(
+    r"[$€£]\s?(\d)(?![\d,]|\.\d)|(?<![\w.,])(\d)\s?(?:%|percent\b|thousand\b|million\b|billion\b)"
+)
+_SIGNED_NUMBER = re.compile(
+    r"(?<![\w.,])(?P<sign>[<>≤≥]\s?|[-−+](?=[$€£\d]))?(?P<currency>[$€£]\s?)?"
+    r"(?P<value>\d[\d,]*(?:\.\d+)?)(?P<unit>\s?(?:%|percent\b))?"
 )
 # Typical subword tokens per English word, and characters per token for unspaced text.
 _TOKENS_PER_WORD = 1.3
@@ -80,6 +98,29 @@ def extract_numbers(text: str) -> set[str]:
     return {match.replace(",", "").rstrip(".") for match in _NUMBER.findall(text)}
 
 
+def number_tokens(text: str) -> list[str]:
+    """List figures in order with their sign, currency and percent, in one standard form."""
+    tokens = []
+    for match in _SIGNED_NUMBER.finditer(text):
+        value = match["value"].replace(",", "").rstrip(".")
+        if "." in value:
+            value = value.rstrip("0").rstrip(".")
+        sign = (match["sign"] or "").replace("−", "-").strip()
+        currency = (match["currency"] or "").strip()
+        tokens.append(f"{sign}{currency}{value}{'%' if match['unit'] else ''}")
+    return tokens
+
+
+def tidy_evidence(text: str) -> str:
+    """Drop layout debris from PDF text: lone bullets and letter-spaced headings."""
+    lines = [
+        line
+        for line in text.split("\n")
+        if not line.strip() or not (_BULLET_ONLY.fullmatch(line) or _LETTER_SPACED.search(line))
+    ]
+    return _EXTRA_BLANK_LINES.sub("\n\n", "\n".join(lines)).strip()
+
+
 def mask_numbers(text: str) -> str:
     """Hide figures, so sentences that differ only in their numbers look identical."""
     return _NUMBER.sub("#", text)
@@ -88,11 +129,13 @@ def mask_numbers(text: str) -> str:
 def unverified_numbers(generated: str, source: str) -> list[str]:
     """List figures in generated text that never appear in the source.
 
-    Single digits are skipped, because models use them for list items and for
-    numbers the source spells out.
+    A bare single digit is skipped, because models use those for list items and for
+    numbers the source spells out. With a unit, such as "7%", it is checked.
     """
     known = extract_numbers(source)
-    return sorted(n for n in extract_numbers(generated) - known if len(n) > 1)
+    invented = {n for n in extract_numbers(generated) - known if len(n) > 1}
+    with_unit = {match[1] or match[2] for match in _UNIT_DIGIT.finditer(generated)}
+    return sorted(invented | (with_unit - known))
 
 
 def strip_instructions(text: str) -> tuple[str, bool]:
@@ -102,7 +145,7 @@ def strip_instructions(text: str) -> tuple[str, bool]:
     for line in text.split("\n"):
         kept = []
         for sentence in split_sentences(line):
-            if _INJECTION.search(sentence):
+            if _INJECTION.search(sentence) or _ROLE_PREFIX.search(sentence):
                 removed = True
             else:
                 kept.append(sentence)
