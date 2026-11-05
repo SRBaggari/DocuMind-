@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import time
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -23,14 +25,23 @@ from core.document_loader import (
     load_document,
 )
 from core.embedding_engine import EmbeddingModelError, ProgressCallback
-from core.indexing import CONTENT_FILENAME, DocumentIndexer, document_dir, read_content
+from core.indexing import (
+    CONTENT_FILENAME,
+    DocumentIndexer,
+    StoredContentError,
+    document_dir,
+    read_content,
+)
 from database.db_manager import DatabaseManager, DuplicateDocumentError
 from database.schema import DocumentRecord, DocumentStatus, IndexStatus
-from utils.file_validation import FileValidationError, safe_child_path, validate_upload
+from utils.file_validation import FileValidationError, safe_child_path, validate_upload, is_document_id
 from utils.helpers import atomic_write_bytes, new_document_id, sha256_bytes, utc_now_iso
 from utils.text_utils import count_paragraphs, count_words
 
 logger = logging.getLogger("documind.ingestion")
+
+_REMOVE_ATTEMPTS = 4
+_REMOVE_RETRY_SECONDS = 0.15
 
 _CONTENT_FORMAT_VERSION = 1
 _RETRYABLE_STATUSES = (DocumentStatus.FAILED, DocumentStatus.NEEDS_OCR)
@@ -105,7 +116,22 @@ class DocumentIngestor:
             raise
         return self._process(record, extension, data, progress)
 
+    def _finish_indexing(self, existing: DocumentRecord) -> None:
+        """Index a document whose earlier upload stopped before indexing finished."""
+        if (
+            self._indexer is None
+            or existing.status is not DocumentStatus.READY
+            or existing.index_status is IndexStatus.INDEXED
+        ):
+            return
+        try:
+            pages = read_content(self._settings.paths, existing.document_id)["pages"]
+            self._indexer.index_document(existing.document_id, pages)
+        except (EmbeddingModelError, StoredContentError) as exc:
+            self._db.clear_index_state(existing.document_id, IndexStatus.PENDING, str(exc))
+
     def _duplicate(self, display_name: str, existing: DocumentRecord) -> IngestResult:
+        self._finish_indexing(existing)
         return IngestResult(
             display_name,
             IngestOutcome.DUPLICATE,
@@ -226,26 +252,83 @@ class DocumentIngestor:
             shutil.rmtree(content_dir)
 
     def delete(self, document_id: str) -> bool:
-        """Delete a document's files, then its row, so a failure can be retried."""
+        """Delete a document's row, then its vectors, then its files.
+
+        SQLite decides what exists, so the document is gone once its row is. A file that
+        cannot be removed yet, because a search or antivirus has it open, is swept later.
+        """
         record = self._db.get_document(document_id)
         if record is None:
             return False
-        if self._indexer is not None:
-            self._indexer.remove_document(document_id)
-        self._remove_files(document_id, f".{record.file_type}")
-        self._db.delete_document(document_id)
+        lock = self._indexer.document_lock(document_id) if self._indexer else nullcontext()
+        with lock:
+            vector_ids = self._db.get_vector_ids([document_id])
+            self._db.delete_document(document_id)
+            if self._indexer is not None:
+                self._indexer.forget_vectors(vector_ids)
+        self._remove_with_retries(document_id, f".{record.file_type}")
+        self._db.erase_free_space()
         logger.info("Deleted document %s", document_id)
         return True
+
+    def _remove_with_retries(self, document_id: str, extension: str) -> None:
+        for attempt in range(_REMOVE_ATTEMPTS):
+            try:
+                self._remove_files(document_id, extension)
+                return
+            except OSError:
+                time.sleep(_REMOVE_RETRY_SECONDS * (attempt + 1))
+        logger.warning("Files of deleted document %s are in use; removing later", document_id)
+
+    def sweep_orphans(self, include_temp: bool = False) -> int:
+        """Remove files with no document row. Returns how many could not be removed.
+
+        ``include_temp`` also removes unfinished writes, so use it only at startup, when no
+        upload can be running.
+        """
+        paths = self._settings.paths
+        known = {document.document_id for document in self._db.list_documents()}
+        stale: list[Path] = []
+        for path in paths.uploads_dir.iterdir():
+            if is_document_id(path.stem) and path.stem not in known:
+                stale.append(path)
+        for path in paths.processed_dir.iterdir():
+            if is_document_id(path.name) and path.name not in known:
+                stale.append(path)
+        if include_temp:
+            for folder in (paths.uploads_dir, paths.indexes_dir, paths.processed_dir):
+                stale += folder.glob(".tmp-*")
+            stale += paths.processed_dir.glob("*/.tmp-*")
+
+        left = 0
+        for path in stale:
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink(missing_ok=True)
+            except OSError:
+                left += 1
+        return left
 
     @property
     def paths(self) -> Paths:
         return self._settings.paths
 
-    def delete_all(self) -> int:
-        """Delete every document and all history. Returns how many documents were removed."""
-        removed = sum(self.delete(doc.document_id) for doc in self._db.list_documents())
+    def delete_all(self) -> tuple[int, int]:
+        """Delete every document and all history.
+
+        Returns how many documents were removed and how many files could not be yet.
+        """
+        removed = 0
+        for document in self._db.list_documents():
+            try:
+                removed += self.delete(document.document_id)
+            except Exception:
+                logger.exception("Could not delete document %s", document.document_id)
         self._db.clear_history()
-        return removed
+        self._db.erase_free_space()
+        return removed, self.sweep_orphans()
 
     def recover_interrupted(self) -> int:
         """Mark documents left in ``processing`` by a crash as failed. Call once at startup."""

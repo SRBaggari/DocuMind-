@@ -49,7 +49,8 @@ def _validate_docx(data: bytes, max_uncompressed_mb: int) -> None:
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             entries = archive.infolist()
-    except zipfile.BadZipFile as exc:
+    except Exception as exc:
+        # A damaged archive can raise more than BadZipFile, such as NotImplementedError.
         raise FileValidationError("This file is corrupted or is not a Word document.") from exc
     names = {entry.filename for entry in entries}
     if not {"[Content_Types].xml", "word/document.xml"} <= names:
@@ -95,6 +96,10 @@ def validate_upload(
     else:
         _validate_txt(data)
     return display_name, extension
+
+
+def is_document_id(text: str) -> bool:
+    return _DOCUMENT_ID.fullmatch(text) is not None
 
 
 def safe_child_path(base_dir: Path, document_id: str, suffix: str = "") -> Path:

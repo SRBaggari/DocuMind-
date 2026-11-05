@@ -50,6 +50,7 @@ class DatabaseManager:
         connection.row_factory = sqlite3.Row
         try:
             connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA secure_delete = ON")
             with connection:
                 yield connection
         finally:
@@ -270,6 +271,20 @@ class DatabaseManager:
         with self._connect() as connection:
             connection.execute("DELETE FROM conversations")
             connection.execute("DELETE FROM activity")
+
+    def erase_free_space(self) -> None:
+        """Rebuild the database file, so deleted text cannot be recovered from free pages."""
+        connection = sqlite3.connect(self._path, timeout=_BUSY_TIMEOUT_SECONDS)
+        try:
+            connection.execute("VACUUM")
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            connection.close()
+
+    def delete_conversations(self, document_id: str | None) -> None:
+        """Delete every conversation about a document, or across all documents."""
+        with self._connect() as connection:
+            connection.execute("DELETE FROM conversations WHERE document_id IS ?", (document_id,))
 
     def get_setting(self, key: str) -> str | None:
         with self._connect() as connection:

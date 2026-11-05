@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import logging
+import threading
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from functools import lru_cache
@@ -20,7 +21,7 @@ import numpy as np
 
 from config import Paths, Settings
 from core.chunker import Chunk, chunk_pages
-from core.embedding_engine import Embedder, ProgressCallback
+from core.embedding_engine import Embedder, EmbeddingModelError, ProgressCallback
 from core.vector_store import VectorStore
 from database.db_manager import DatabaseManager
 from database.schema import IndexStatus
@@ -83,6 +84,13 @@ class DocumentIndexer:
         self._embedder = embedder
         self._settings = settings
         self._read_chunks = lru_cache(maxsize=_CHUNK_CACHE_DOCUMENTS)(self._read_chunks_file)
+        self._document_locks: dict[str, threading.Lock] = {}
+        self._locks_guard = threading.Lock()
+
+    def document_lock(self, document_id: str) -> threading.Lock:
+        """Return the lock that keeps indexing and deleting one document from overlapping."""
+        with self._locks_guard:
+            return self._document_locks.setdefault(document_id, threading.Lock())
 
     def _dir(self, document_id: str) -> Path:
         return document_dir(self._settings.paths, document_id)
@@ -113,7 +121,7 @@ class DocumentIndexer:
             if meta != {"model": self._embedder.model_name, "fingerprint": fingerprint}:
                 return None
             return np.load(directory / _EMBEDDINGS_FILENAME, allow_pickle=False)
-        except (OSError, ValueError, KeyError):
+        except (OSError, ValueError, KeyError, EOFError):
             return None
 
     def _save_embeddings(self, document_id: str, vectors: np.ndarray, fingerprint: str) -> None:
@@ -133,6 +141,17 @@ class DocumentIndexer:
         progress: ProgressCallback | None = None,
     ) -> int:
         """Chunk and embed a document and add it to the index. Returns the chunk count."""
+        with self.document_lock(document_id):
+            if self._db.get_document(document_id) is None:
+                return 0
+            return self._index_locked(document_id, pages, progress)
+
+    def _index_locked(
+        self,
+        document_id: str,
+        pages: list[dict[str, Any]],
+        progress: ProgressCallback | None,
+    ) -> int:
         chunks = chunk_pages(document_id, pages, self._settings.chunking)
         passages = [passage for chunk in chunks for passage in chunk.passages]
         fingerprint = _fingerprint(passages)
@@ -157,15 +176,19 @@ class DocumentIndexer:
             for chunk in chunks
         ]
         vector_ids = self._db.replace_chunks(document_id, rows, self._embedder.model_name)
-        self._store.remove(previous)
-        self._store.add(vector_ids, vectors)
-        self._store.save(self._embedder.model_name)
+        try:
+            self._store.remove(previous)
+            self._store.add(vector_ids, vectors)
+            self._store.save(self._embedder.model_name)
+        except Exception:
+            # The caller clears the rows, so these vectors must not outlive them.
+            self._store.remove(vector_ids)
+            raise
         logger.info("Indexed document %s with %d chunks", document_id, len(chunks))
         return len(chunks)
 
-    def remove_document(self, document_id: str) -> None:
-        """Remove a document's vectors. Its rows go when the document row is deleted."""
-        vector_ids = self._db.get_vector_ids([document_id])
+    def forget_vectors(self, vector_ids: set[int]) -> None:
+        """Remove the vectors of a deleted document from the index."""
         if vector_ids:
             self._store.remove(vector_ids)
             self._store.save(self._embedder.model_name)
@@ -182,16 +205,34 @@ class DocumentIndexer:
                 # One damaged document must not stop the others.
                 self._db.clear_index_state(document.document_id, IndexStatus.FAILED, str(exc))
                 continue
-            self.index_document(document.document_id, pages)
+            try:
+                self.index_document(document.document_id, pages)
+            except EmbeddingModelError:
+                raise
+            except Exception:
+                logger.exception("Could not index document %s", document.document_id)
+                self._db.clear_index_state(
+                    document.document_id, IndexStatus.FAILED, "Indexing failed. See the log."
+                )
+                continue
             indexed += 1
             if progress:
                 progress((position + 1) / len(documents))
         return indexed
 
     def reconcile(self) -> ReconcileReport:
-        """Make the index match SQLite. Needs no model, so it is safe at startup."""
+        """Make the index match SQLite. Needs no model unless the model name has changed."""
         model = self._embedder.model_name
-        if self._store.model_name not in (None, model):
+        stale = [
+            document
+            for document in self._db.list_documents()
+            if document.index_status is IndexStatus.INDEXED and document.embedding_model != model
+        ]
+        if stale or self._store.model_name not in (None, model):
+            if not self._model_is_usable():
+                # A mistyped name must not wipe a working index.
+                logger.warning("Embedding model %s is unusable; index left unchanged", model)
+                return ReconcileReport(documents_needing_index=len(self._db.list_unindexed()))
             logger.warning("Embedding model changed; all documents need indexing again")
             self._store.clear()
             self._db.clear_all_index_state()
@@ -210,6 +251,13 @@ class DocumentIndexer:
             logger.warning("Reconciled vector index: %s", report)
         return report
 
+    def _model_is_usable(self) -> bool:
+        try:
+            self._embedder.embed_query("model check")
+        except EmbeddingModelError:
+            return False
+        return True
+
     def _restore(self, vector_ids: set[int]) -> int:
         """Add missing vectors from stored embeddings, by their recorded row."""
         by_document: dict[str, list[tuple[int, int]]] = defaultdict(list)
@@ -223,7 +271,8 @@ class DocumentIndexer:
                 ids = [vector_id for vector_id, _ in entries]
                 self._store.add(ids, stored[[embedding_row for _, embedding_row in entries]])
                 added += len(ids)
-            except (OSError, ValueError, IndexError):
+            except Exception:
+                # Any damage here must leave one document to re-index, not stop the app starting.
                 logger.warning("Stored embeddings unusable for document %s", document_id)
                 self._store.remove(self._db.get_vector_ids([document_id]))
                 self._db.clear_index_state(
