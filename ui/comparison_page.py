@@ -20,6 +20,7 @@ from ui import charts
 from ui import components as ui
 
 _RESULT_KEY = "comparison_result"
+_PDF_KEY = "comparison_pdf"
 _CHART_KEYWORDS = 12
 
 
@@ -173,9 +174,11 @@ def _show(comparison: Comparison) -> None:
         _show_side_by_side(comparison)
     with chart_tab:
         _show_charts(comparison)
+    if _PDF_KEY not in st.session_state:
+        st.session_state[_PDF_KEY] = comparison_pdf(comparison)
     st.download_button(
         "Download PDF report",
-        comparison_pdf(comparison),
+        st.session_state[_PDF_KEY],
         file_name=(
             f"{safe_filename(comparison.filename_a)}-vs-"
             f"{safe_filename(comparison.filename_b)}.pdf"
@@ -206,6 +209,7 @@ def render(ctx: ui.AppContext) -> None:
             with st.spinner("Comparing the documents"):
                 comparison = ctx.services.comparator.compare(document_a, document_b, ctx.model)
             st.session_state[_RESULT_KEY] = comparison
+            st.session_state.pop(_PDF_KEY, None)
             ctx.db.log_activity(
                 "comparison",
                 f"Compared {comparison.filename_a} and {comparison.filename_b}",
@@ -216,6 +220,6 @@ def render(ctx: ui.AppContext) -> None:
             st.session_state.pop(_RESULT_KEY, None)
             st.error(str(exc))
 
-    comparison = st.session_state.get(_RESULT_KEY)
-    if comparison and (comparison.document_a, comparison.document_b) == (document_a, document_b):
-        _show(comparison)
+    result = st.session_state.get(_RESULT_KEY)
+    if result and (result.document_a, result.document_b) == (document_a, document_b):
+        _show(result)

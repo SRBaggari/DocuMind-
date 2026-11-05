@@ -17,6 +17,7 @@ _CONFIRM_KEY = "clear_confirmation"
 _SESSION_RESULTS = (
     "summary_result",
     "comparison_result",
+    "comparison_pdf",
     "insights_result",
     "upload_results",
     ui.ACTIVE_DOCUMENT_KEY,
