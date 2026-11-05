@@ -469,9 +469,8 @@ class DocumentComparator:
         common, topics_a, topics_b = self._topics(a, b)
         if not (common or topics_a or topics_b):
             notices.append("There is too little text to identify topics. Keywords are shown.")
-        keywords = compare_keywords(
-            [page["text"] for page in a.pages], [page["text"] for page in b.pages], _KEYWORD_POOL
-        )
+        # Whole texts, because averaging over pages would make a paged document score lower.
+        keywords = compare_keywords([a.text], [b.text], _KEYWORD_POOL)
         differences = statement_differences(
             document_sentences(a.pages),
             document_sentences(b.pages),

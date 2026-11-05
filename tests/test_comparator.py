@@ -123,6 +123,19 @@ def test_pdf_passages_keep_their_pages(comparator, indexed_ingestor, add) -> Non
     assert all(p.page for p in result.unique_passages_a) and result.unique_passages_a
 
 
+def test_keyword_scores_do_not_depend_on_page_layout(comparator, indexed_ingestor, add) -> None:
+    pdf = pymupdf.open()
+    for text in REPORT.split("\n\n"):
+        pdf.new_page().insert_textbox(pymupdf.Rect(50, 50, 550, 700), text, fontsize=11)
+    data = pdf.tobytes()
+    pdf.close()
+    paged = indexed_ingestor.ingest("paged.pdf", data).document.document_id
+    result = comparator.compare(paged, add("plain.txt", REPORT))
+    assert result.keywords
+    for keyword in result.keywords:
+        assert keyword.score_a == pytest.approx(keyword.score_b, abs=0.01)
+
+
 def test_shared_and_unique_keywords(comparator, add) -> None:
     result = comparator.compare(add("a.txt", REPORT), add("b.txt", REVISED))
     assert "revenue" in result.common_keywords
