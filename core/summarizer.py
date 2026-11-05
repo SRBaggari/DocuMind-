@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -18,8 +18,11 @@ from config import ChunkingConfig, Settings
 from core.chunker import chunk_pages
 from core.embedding_engine import ProgressCallback
 from core.extractive import (
+    ACTION_PATTERN,
+    CONCLUSION_PATTERN,
     GenerationMethod,
     Sentence,
+    document_parts,
     document_sentences,
     rank_sentences,
     select_diverse,
@@ -36,7 +39,6 @@ logger = logging.getLogger("documind.summarizer")
 NOT_STATED = "Not stated in the document."
 _MAX_REDUCE_ROUNDS = 6
 _NOTES_MAX_TOKENS = 350
-_MAX_EXTRACTIVE_PARTS = 8
 _HEADING = re.compile(r"^\s*(?:#{1,4}\s*|\*\*)(?P<title>[^*#\n]+?)(?:\*\*)?:?\s*$")
 
 _PURPOSE = re.compile(
@@ -48,10 +50,6 @@ _FINDING = re.compile(
     r"reduced?|declined?|reached)\b",
     re.IGNORECASE,
 )
-_CONCLUSION = re.compile(
-    r"\b(conclu\w+|in summary|overall|therefore|expects?|future)\b", re.IGNORECASE
-)
-_ACTION = re.compile(r"\b(recommends?|should|must|needs? to|next steps?)\b", re.IGNORECASE)
 _STATISTIC = re.compile(r"\d")
 
 _SYSTEM_PROMPT = f"""You summarize documents accurately.
@@ -369,8 +367,8 @@ class Summarizer:
                 SummarySection("Document Purpose", pick(_PURPOSE, 2)),
                 SummarySection("Main Findings", pick(_FINDING, 5)),
                 SummarySection("Important Statistics", pick(_STATISTIC, 6)),
-                SummarySection("Conclusions", pick(_CONCLUSION, 3)),
-                SummarySection("Recommended Next Actions", pick(_ACTION, 3)),
+                SummarySection("Conclusions", pick(CONCLUSION_PATTERN, 3)),
+                SummarySection("Recommended Next Actions", pick(ACTION_PATTERN, 3)),
             )
 
         keywords = extract_keywords([page["text"] for page in pages], 12)
@@ -380,13 +378,13 @@ class Summarizer:
                 "Important Concepts", ", ".join(k.term for k in keywords) or NOT_STATED
             ),
             SummarySection("Supporting Information", pick(_STATISTIC, 6)),
-            SummarySection("Conclusions", pick(_CONCLUSION, 3)),
+            SummarySection("Conclusions", pick(CONCLUSION_PATTERN, 3)),
         )
 
     def _section_summaries(
         self, pages: list[dict[str, Any]], blocks: list[dict[str, Any]]
     ) -> list[SummarySection]:
-        parts = _heading_parts(blocks) or _page_parts(pages)
+        parts = document_parts(pages, blocks)
         sections = []
         for title, part_pages in parts:
             chosen = select_diverse(
@@ -395,36 +393,3 @@ class Summarizer:
             if chosen:
                 sections.append(SummarySection(title, _bullets(chosen)))
         return sections
-
-
-def _heading_parts(blocks: Sequence[Mapping[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
-    """Group DOCX blocks under their headings."""
-    parts: list[tuple[str, list[str]]] = []
-    for block in blocks:
-        if block["kind"] == "heading" and block["level"]:
-            parts.append((block["text"], []))
-        elif parts and block["kind"] != "heading":
-            parts[-1][1].append(block["text"])
-    return [
-        (title, [{"number": None, "text": "\n".join(body)}]) for title, body in parts if body
-    ]
-
-
-def _page_parts(pages: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
-    """Split a document without headings into a few even parts."""
-    if len(pages) == 1 and pages[0]["number"] is None:
-        paragraphs = [text for text in pages[0]["text"].split("\n\n") if text.strip()]
-        pages = [{"number": None, "text": text} for text in paragraphs]
-    size = max(-(-len(pages) // _MAX_EXTRACTIVE_PARTS), 1)
-    parts = []
-    for start in range(0, len(pages), size):
-        group = pages[start : start + size]
-        numbers = [page["number"] for page in group if page["number"]]
-        if numbers:
-            span = f"Page {numbers[0]}" if len(set(numbers)) == 1 else (
-                f"Pages {numbers[0]}-{numbers[-1]}"
-            )
-        else:
-            span = f"Part {len(parts) + 1}"
-        parts.append((span, group))
-    return parts

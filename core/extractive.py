@@ -5,6 +5,7 @@ Everything here copies text from the document, so it cannot invent facts.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -18,6 +19,14 @@ from utils.text_utils import count_words, split_sentences
 _MIN_SENTENCE_WORDS = 4
 _TABLE_CELL_MARKER = " | "
 _MAX_WORD_OVERLAP = 0.6
+_MAX_DOCUMENT_PARTS = 8
+
+CONCLUSION_PATTERN = re.compile(
+    r"\b(conclu\w+|in summary|overall|therefore|expects?|future)\b", re.IGNORECASE
+)
+ACTION_PATTERN = re.compile(
+    r"\b(recommends?|should|must|needs? to|next steps?)\b", re.IGNORECASE
+)
 
 
 class GenerationMethod(StrEnum):
@@ -88,3 +97,43 @@ def select_diverse(
         if all(_word_overlap(sentence.text, kept.text) < _MAX_WORD_OVERLAP for kept in chosen):
             chosen.append(sentence)
     return sorted(chosen, key=lambda sentence: sentence.position)
+
+
+def _heading_parts(blocks: Sequence[Mapping[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Group DOCX blocks under their headings."""
+    parts: list[tuple[str, list[str]]] = []
+    for block in blocks:
+        if block["kind"] == "heading" and block["level"]:
+            parts.append((block["text"], []))
+        elif parts and block["kind"] != "heading":
+            parts[-1][1].append(block["text"])
+    return [
+        (title, [{"number": None, "text": "\n".join(body)}]) for title, body in parts if body
+    ]
+
+
+def _page_parts(pages: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Split a document without headings into a few even parts."""
+    if len(pages) == 1 and pages[0]["number"] is None:
+        paragraphs = [text for text in pages[0]["text"].split("\n\n") if text.strip()]
+        pages = [{"number": None, "text": text} for text in paragraphs]
+    size = max(-(-len(pages) // _MAX_DOCUMENT_PARTS), 1)
+    parts = []
+    for start in range(0, len(pages), size):
+        group = pages[start : start + size]
+        numbers = [page["number"] for page in group if page["number"]]
+        if numbers:
+            span = f"Page {numbers[0]}" if len(set(numbers)) == 1 else (
+                f"Pages {numbers[0]}-{numbers[-1]}"
+            )
+        else:
+            span = f"Part {len(parts) + 1}"
+        parts.append((span, group))
+    return parts
+
+
+def document_parts(
+    pages: list[dict[str, Any]], blocks: Sequence[Mapping[str, Any]]
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Split a document into titled parts: its headings if it has any, or even page groups."""
+    return _heading_parts(blocks) or _page_parts(pages)
