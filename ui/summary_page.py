@@ -48,7 +48,7 @@ def render(db: DatabaseManager, summarizer: Summarizer, model: str | None) -> No
         progress.empty()
 
     summary = st.session_state.get(_RESULT_KEY)
-    if summary is None:
+    if summary is None or (summary.document_id, summary.mode) != (document_id, mode):
         return
     show = st.info if summary.method is GenerationMethod.LLM else st.warning
     show(summary.method_label)
