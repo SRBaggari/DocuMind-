@@ -29,7 +29,7 @@ from core.keyword_extractor import extract_keywords
 from core.ollama_client import LocalLLM, OllamaError
 from database.db_manager import DatabaseManager
 from database.schema import DocumentStatus
-from utils.text_utils import estimate_tokens
+from utils.text_utils import estimate_tokens, unverified_numbers
 
 logger = logging.getLogger("documind.summarizer")
 
@@ -200,6 +200,14 @@ class Summarizer:
                 logger.warning("LLM summary failed: %s", type(exc).__name__)
                 notices.append(f"The local LLM could not be used: {exc}")
             else:
+                source = "\n".join(page["text"] for page in pages)
+                reply = "\n".join(section.content for section in sections)
+                missing = unverified_numbers(reply, source)
+                if missing:
+                    notices.append(
+                        "These figures were not found in the document, so verify them: "
+                        + ", ".join(missing)
+                    )
                 return Summary(
                     document_id,
                     document.original_filename,

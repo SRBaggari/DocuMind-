@@ -57,6 +57,15 @@ def test_reply_without_headings_is_kept_whole(db, test_settings, document) -> No
     assert [(s.title, s.content) for s in summary.sections] == [("Summary", "Plain paragraph.")]
 
 
+def test_invented_figures_are_flagged(db, test_settings, document) -> None:
+    reply = "## Overview\nRevenue was 148 million and profit was 999 million."
+    summary = summarizer_with(db, test_settings, FakeLLM(reply)).summarize(
+        document.document_id, SummaryMode.QUICK, model="m"
+    )
+    assert any("999" in notice for notice in summary.notices)
+    assert not any("148" in notice for notice in summary.notices)
+
+
 def test_each_mode_asks_for_its_own_sections(db, test_settings, document) -> None:
     llm = FakeLLM("text")
     summarizer = summarizer_with(db, test_settings, llm)
@@ -195,6 +204,11 @@ def test_markdown_export_states_the_method(db, test_settings, document) -> None:
     )
     markdown = summary.to_markdown()
     assert "Extractive summary" in markdown and "## Overview" in markdown
+
+
+def test_unverified_numbers() -> None:
+    assert unverified_numbers("Sales of 1,200 and 3.5 and 77", "sold 1200 at 3.5") == ["77"]
+    assert unverified_numbers("Item 1. Point 2.", "") == []
 
 
 def test_select_diverse_skips_near_duplicates() -> None:
