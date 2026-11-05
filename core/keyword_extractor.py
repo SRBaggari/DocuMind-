@@ -193,6 +193,15 @@ def compare_keywords(
     ]
 
 
+def document_similarity(text_a: str, text_b: str) -> float:
+    """Return the TF-IDF cosine similarity of two texts, from 0 to 1."""
+    try:
+        matrix = _vectorizer((1, 1)).fit_transform([text_a, text_b])
+    except ValueError:
+        return 0.0
+    return float((matrix[0] @ matrix[1].T).toarray()[0, 0])
+
+
 def _snippet(text: str) -> str:
     flat = " ".join(text.split())
     if len(flat) <= _SNIPPET_CHARS:
