@@ -3,6 +3,9 @@
 gatherUsageStats = false
 
 [server]
+# Streamlit otherwise stops on its first run to ask for an email address, which it sends
+# to a Streamlit server if one is typed.
+showEmailPrompt = false
 # Serve this machine only, not the local network.
 address = "localhost"
 # Keep in step with MAX_FILE_SIZE_MB in config.py; this limit is enforced by Streamlit's uploader.
@@ -16,11 +19,16 @@ toolbarMode = "minimal"
 
 [theme]
 base = "light"
-primaryColor = "#1f66c1"
-backgroundColor = "#fafbfc"
-secondaryBackgroundColor = "#f1f3f6"
-textColor = "#1f2328"
-borderColor = "#e4e7ec"
+primaryColor = "#4f46e5"
+backgroundColor = "#f6f6fd"
+secondaryBackgroundColor = "#eeeff9"
+textColor = "#1e1b3a"
+borderColor = "#e3e4f1"
 baseRadius = "10px"
 # System fonts only: a web font would be a request to an outside server.
 font = "'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif"
+
+[theme.sidebar]
+backgroundColor = "#1e1b4b"
+secondaryBackgroundColor = "#312e81"
+textColor = "#e4e5fb"

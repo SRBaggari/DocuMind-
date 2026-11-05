@@ -13,10 +13,10 @@ import plotly.graph_objects as go
 from core.document_comparator import SimilarityGrid
 from core.keyword_extractor import KeywordComparison, Topic
 
-SERIES_A = "#2a78d6"
-SERIES_B = "#eb6834"
+SERIES_A = "#4f46e5"
+SERIES_B = "#ea580c"
 # One hue from light to dark, because a similarity score is a magnitude.
-SEQUENTIAL = ((0.0, "#eaf2fb"), (0.5, "#6ea6e6"), (1.0, "#123f78"))
+SEQUENTIAL = ((0.0, "#eef0ff"), (0.5, "#8b8ff0"), (1.0, "#312e81"))
 _BAR_HEIGHT = 26
 _MIN_HEIGHT = 220
 _CHROME_HEIGHT = 90
