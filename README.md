@@ -119,7 +119,7 @@ question → embed → FAISS passages → drop results below the relevance floor
 | Original files | `uploads/` | Stored under the document ID, never the user's filename |
 | Extracted text, chunks, embeddings | `processed/<document_id>/` | JSON and NumPy `.npy`, no pickle |
 | Vector index | `indexes/` | Derived data, rebuilt from `processed/` when needed |
-| Metadata and chat history | `documind.db` | SQLite; holds no full document text |
+| Metadata and chat history | `documind.db` | SQLite. Holds no full documents, but saved chats include the passages quoted as sources |
 
 **SQLite is the source of truth; FAISS is a rebuildable cache.** Each vector has an integer ID from the `vectors` table, which is never reused, and is held in an `IndexIDMap2` over `IndexFlatIP`. That index is exact, equals cosine similarity on normalized vectors, and supports deletion. Files are written first, then SQLite commits, then the index updates and is replaced atomically. At startup any difference between the index and SQLite is repaired from the stored embeddings, without loading the model.
 
@@ -141,7 +141,9 @@ A document whose text was extracted but could not be indexed, for example becaus
 - **Stored embeddings are reused.** Comparison reads each document's saved vectors and never embeds a document again.
 - **Exports are hardened.** CSV cells that a spreadsheet would run as formulas are neutralized, and document text is escaped before it reaches the PDF builder.
 - **Broad questions have their own path.** "What are the main findings?" shares few words with any passage, so it can score below the relevance floor even when the document answers it. A question made only of document-structure words therefore uses the closest passages, and the answer says so. Any subject word keeps the normal floor.
-- **The browser never contacts another server.** Document and model text can contain Markdown images, and a browser would fetch them from their URL, which could carry document text away. All such text is sanitized or escaped, and HTML stays on one line, because a blank line would end the HTML block and turn the rest into Markdown. Fonts are system fonts, and the page icon is a local file because Streamlit fetches its Material and emoji icons from the web. A headless browser run through every page recorded no outside requests.
+- **The browser does not contact other servers.** Document and model text can contain Markdown images, and a browser would fetch them from their URL, which could carry document text away. Every character that can start an image, link or tag is therefore escaped. Filtering with patterns was tried first and could be bypassed by nesting. HTML stays on one line, because a blank line would end the HTML block and turn the rest into Markdown. Fonts are system fonts, and the page icon is a local file because Streamlit fetches its Material and emoji icons from the web. Browser runs with hostile documents recorded no outside requests.
+- **One copy per data folder.** Each copy holds its search index in memory, so two would overwrite each other. An operating system lock prevents this, and it is released automatically even after a crash.
+- **Deleting removes the row first.** SQLite decides what exists, so a document is gone once its row is. Files that are briefly in use are swept up at the next startup, along with any left by a crash.
 - **Ollama is restricted to loopback.** `config.py` rejects any Ollama URL that does not point at this machine.
 - **Streamlit telemetry is off** and the server binds to `localhost` (see `.streamlit/config.toml`).
 
@@ -208,7 +210,7 @@ Download a model, for example:
 ollama pull gemma3:4b
 ```
 
-Then open **Settings** in DocuMind and choose it. `gemma3:4b` performed best in testing. The default setting is `qwen2.5:3b`, which was not tested, so DocuMind stays in extractive mode until a model is chosen or the default is installed.
+DocuMind uses an installed model automatically, in this order: your choice in **Settings**, the `DOCUMIND_OLLAMA_MODEL` setting, then `gemma3:4b`, `llama3.2:3b`, `qwen3:4b`, then any other installed model. `gemma3:4b` performed best in testing. To use extractive mode with a model installed, choose **None** in Settings.
 
 ### Model comparison
 
@@ -279,11 +281,12 @@ The size limit is 50 MB per file.
 | PowerShell blocks `Activate.ps1` | Run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`, then try again. |
 | `run.bat` says Python was not found | Install Python 3.12 from python.org and tick "Add python.exe to PATH". |
 | `run.bat` says packages are missing | Activate the environment and run `pip install -r requirements.txt`. |
-| The port is already in use | Run `run.bat --server.port 8502`. |
+| "DocuMind is already running" | Only one copy can use a data folder, because two would damage each other's index. Use the open tab, or close the other DocuMind window. |
+| The port is in use by another program | Run `run.bat --server.port 8502`. |
 | Settings says Ollama is not running | Start the Ollama app, then choose **Check again**. |
 | No model is listed in Settings | Run `ollama pull gemma3:4b`, then choose **Check again**. |
-| Answers say "Extractive NLP" | No local model is selected. Choose one in Settings. |
-| A document is "Not indexed" | The embedding model could not load. Connect to the internet once, then choose **Index now** in My Documents. |
+| Answers say "Extractive NLP" | No local model is available. Start Ollama, install a model, or check **Settings**. |
+| A document is "Not indexed" | Indexing stopped, for example because the embedding model could not load or you left the page during an upload. Connect to the internet once if needed, then choose **Index now** in My Documents. |
 | A PDF says OCR is needed | It contains images of text. Run OCR on it in another tool, then upload the result. |
 | A summary takes a long time | Long documents are read in parts, which can take several minutes. `gemma3:4b` is much faster than `qwen3:4b`. |
 
@@ -292,10 +295,10 @@ The size limit is 50 MB per file.
 - **Your documents stay on this computer.** Files, extracted text, indexes and chat history are stored locally.
 - **There are no accounts, API keys or telemetry.** Streamlit's usage statistics are turned off.
 - **DocuMind listens on this computer only**, and it refuses an Ollama address that points anywhere else.
-- **Pages load nothing from the web.** They use system fonts and local files, and images or links inside documents are shown as plain text, so your browser does not contact them.
+- **Pages load nothing from the web.** They use system fonts and local files. Images and links inside documents and AI answers are shown as plain text, so your browser does not contact them.
 - **The one download is the embedding model**, on first use. It contains no document data.
 - **Cloud-synced folders are avoided.** If the project is inside OneDrive, Dropbox, Google Drive or iCloud, data is stored in `%LOCALAPPDATA%\DocuMind\data` instead, so documents are not synced to those services.
-- **You can erase everything.** **Clear all application data** in Settings deletes every document, index and chat.
+- **You can erase everything.** **Clear all application data** in Settings deletes every document, index and chat, and rebuilds the database so deleted text cannot be recovered from it. A file in use by another program is removed the next time DocuMind starts, and Settings tells you if that happens.
 
 ## Performance
 
@@ -314,8 +317,13 @@ At that rate, a file holding millions of words takes tens of minutes to index, a
 
 ## Known limits
 
-- **Prompt injection cannot be fully prevented.** Text that looks like instructions is removed and the rules are repeated after the sources. In testing, answers resisted 23 of 24 attacks across three models. The failure was a false "correction" written as ordinary content, which a filter cannot tell from a real statement. Sources are always shown next to the answer so this can be checked.
+- **Prompt injection cannot be fully prevented.** Text that looks like instructions is removed and the rules are repeated after the sources. In testing, answers resisted 23 of 24 attacks across three models. The failure was a false "correction" written as ordinary content, which a filter cannot tell from a real statement. Sources are always shown next to the answer so this can be checked. The filter can also remove an ordinary sentence that reads like a command, and the app says so when it removes anything.
+- **Local models can be wrong.** Small models sometimes give a loose answer to a broad question or misstate a detail, so check important facts against the sources shown.
+- **Extractive mode is basic.** It copies sentences and works best on direct questions. Use a local model for questions that need sentences combined or explained.
+- **Long summaries can lose detail.** Very fact-dense documents are condensed in stages, and the app says when a model reached its output limit.
+- **Leaving the page during an upload stops it.** Finished files are kept, and **Index now** in My Documents completes any that were interrupted.
 - **Comparison reads sentences**, so a changed figure inside a table is not reported as a numeric difference.
+- **PDF reports use a Latin font.** Other scripts, such as Chinese, cannot be shown there, and the report says so. The app displays them normally.
 - **Names, dates and figures come from patterns**, not a trained model, and spelled-out numbers are not matched to digits.
 - **Scanned PDFs need OCR first.** DocuMind detects them and says so, but does not run OCR.
 - **Stop words and thresholds are tuned on English test documents**, so other languages get weaker results.
@@ -338,5 +346,5 @@ Settings live in `config.py`. These environment variables override them:
 | `DOCUMIND_DATA_DIR` | `data/`, or `%LOCALAPPDATA%\DocuMind\data` in a cloud-synced folder |
 | `DOCUMIND_MAX_FILE_SIZE_MB` | `50` (also change `maxUploadSize` in `.streamlit/config.toml`) |
 | `DOCUMIND_EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` |
-| `DOCUMIND_OLLAMA_URL` | `http://localhost:11434` (loopback only) |
+| `DOCUMIND_OLLAMA_URL` | `http://127.0.0.1:11434` (loopback only) |
 | `DOCUMIND_OLLAMA_MODEL` | `qwen2.5:3b` |
