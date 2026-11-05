@@ -48,13 +48,6 @@ if errorlevel 1 (
     goto failed
 )
 
-rem On its first run Streamlit stops to ask for an email address, so record a blank one.
-if exist "%USERPROFILE%\.streamlit\credentials.toml" goto start_app
-if not exist "%USERPROFILE%\.streamlit" mkdir "%USERPROFILE%\.streamlit"
-> "%USERPROFILE%\.streamlit\credentials.toml" echo [general]
->> "%USERPROFILE%\.streamlit\credentials.toml" echo email = ""
-
-:start_app
 echo Starting DocuMind. It opens in your browser. Close this window to stop it.
 python -m streamlit run app.py %*
 if errorlevel 1 (
