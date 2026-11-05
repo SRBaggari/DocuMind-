@@ -54,6 +54,14 @@ class VectorRow:
     embedding_row: int
 
 
+@dataclass(frozen=True)
+class ChatMessage:
+    role: str
+    content: str
+    payload: dict
+    created_at: str
+
+
 MIGRATIONS: tuple[str, ...] = (
     """
     CREATE TABLE documents (
@@ -97,5 +105,23 @@ MIGRATIONS: tuple[str, ...] = (
         embedding_row INTEGER NOT NULL,
         UNIQUE (chunk_id, passage_index)
     );
+    """,
+    # A NULL document_id is a conversation across all documents.
+    """
+    CREATE TABLE conversations (
+        conversation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        document_id     TEXT REFERENCES documents (document_id) ON DELETE CASCADE,
+        created_at      TEXT NOT NULL
+    );
+    CREATE TABLE messages (
+        message_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id INTEGER NOT NULL
+            REFERENCES conversations (conversation_id) ON DELETE CASCADE,
+        role            TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+        content         TEXT NOT NULL,
+        payload         TEXT NOT NULL DEFAULT '{}',
+        created_at      TEXT NOT NULL
+    );
+    CREATE INDEX idx_messages_conversation ON messages (conversation_id);
     """,
 )
