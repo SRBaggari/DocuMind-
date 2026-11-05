@@ -221,6 +221,61 @@ def _match_passages(a: np.ndarray, b: np.ndarray, cells: int) -> _Matches:
     return _Matches(best_a, match_a, best_b, grid)
 
 
+def _match_kind(text_a: str, text_b: str) -> MatchKind:
+    left, right = _WORD.findall(text_a.lower()), _WORD.findall(text_b.lower())
+    if left == right:
+        return MatchKind.EXACT
+    if difflib.SequenceMatcher(None, left, right, autojunk=False).ratio() >= _NEAR_MATCH_RATIO:
+        return MatchKind.NEAR
+    return MatchKind.SEMANTIC
+
+
+def _similar_passages(a: _Side, b: _Side, matches: _Matches, threshold: float, limit: int):
+    order = np.argsort(-matches.best_a, kind="stable")
+    used: set[int] = set()
+    found: list[SimilarPassage] = []
+    for index in order:
+        score = float(matches.best_a[index])
+        if score < threshold or len(found) == limit:
+            break
+        partner = int(matches.match_a[index])
+        if partner in used:
+            continue
+        used.add(partner)
+        text_a, page_a = a.passages[index]
+        text_b, page_b = b.passages[partner]
+        found.append(
+            SimilarPassage(
+                text_a, page_a, text_b, page_b, min(score, 1.0), _match_kind(text_a, text_b)
+            )
+        )
+    return tuple(found)
+
+
+def _unique_passages(
+    passages: Sequence[tuple[str, int | None]], best: np.ndarray, threshold: float, limit: int
+) -> tuple[UniquePassage, ...]:
+    """List passages with nothing related in the other document, in reading order."""
+    seen: set[str] = set()
+    candidates = []
+    for index in np.argsort(best, kind="stable"):
+        text, page = passages[index]
+        if best[index] >= threshold or len(candidates) == limit:
+            break
+        if text not in seen and count_words(text) >= _MIN_UNIQUE_WORDS:
+            seen.add(text)
+            candidates.append((int(index), UniquePassage(text, page, float(best[index]))))
+    return tuple(item for _, item in sorted(candidates, key=lambda pair: pair[0]))
+
+
+def _axis_labels(passages: Sequence[tuple[str, int | None]], cells: int) -> tuple[str, ...]:
+    labels = []
+    for cell in range(cells):
+        page = passages[(cell * len(passages)) // cells][1]
+        labels.append(f"{cell + 1}: p. {page}" if page else f"Part {cell + 1}")
+    return tuple(labels)
+
+
 def _masked_words(text: str) -> list[str]:
     return _WORD.findall(mask_numbers(text).lower())
 
@@ -305,3 +360,242 @@ def statement_differences(
                 )
             )
     return tuple([*numeric, *wording][:limit])
+
+
+def _words(text: str) -> set[str]:
+    return set(_WORD.findall(text.lower()))
+
+
+def _term_presence(terms: Sequence[tuple[str, float]], words: set[str]) -> float:
+    """Return the weighted share of ``terms`` whose words all appear in a document.
+
+    Two-word terms are formed after stop words are removed, so they may not be adjacent.
+    """
+    total = sum(weight for _, weight in terms)
+    found = sum(weight for term, weight in terms if _words(term) <= words)
+    return found / total if total else 0.0
+
+
+def _percent(value: float) -> str:
+    return f"{value * 100:.0f}%"
+
+
+def _describe(comparison_parts: dict) -> str:
+    """State the calculated results as plain sentences. No model is involved."""
+    scores: SimilarityScores = comparison_parts["scores"]
+    name_a, name_b = comparison_parts["filename_a"], comparison_parts["filename_b"]
+    semantic = f"semantic {_percent(scores.semantic)}, " if scores.semantic is not None else ""
+    lines = [
+        f"Overall similarity between {name_a} and {name_b} is {_percent(scores.overall)} "
+        f"({semantic}lexical {_percent(scores.lexical)}, "
+        f"exact wording {_percent(scores.exact)})."
+    ]
+    if scores.coverage_a is not None:
+        lines.append(
+            f"{_percent(scores.coverage_a)} of {name_a} has related content in {name_b}, and "
+            f"{_percent(scores.coverage_b)} of {name_b} has related content in {name_a}."
+        )
+    common = comparison_parts["common_topics"]
+    if common:
+        lines.append("Shared topics: " + "; ".join(topic.label for topic in common) + ".")
+    differences = comparison_parts["differences"]
+    numeric = sum(1 for item in differences if item.kind is DifferenceKind.NUMERIC)
+    if differences:
+        lines.append(
+            f"{len(differences)} matching statements differ, {numeric} of them in their figures."
+        )
+    else:
+        lines.append("No matching statements with different content were found.")
+    lines.append(NOT_CORRECTNESS_NOTE)
+    return " ".join(lines)
+
+
+def _safe(text: str) -> str:
+    """Prepare document text for a prompt: no instructions, and no way to close the tag."""
+    return _TAG.sub("[comparison", strip_instructions(text)[0])
+
+
+class DocumentComparator:
+    def __init__(
+        self, db: DatabaseManager, indexer: DocumentIndexer, llm: LocalLLM, settings: Settings
+    ) -> None:
+        self._db = db
+        self._indexer = indexer
+        self._llm = llm
+        self._settings = settings
+
+    def compare(
+        self, document_a: str, document_b: str, model: str | None = None
+    ) -> Comparison:
+        """Compare two documents. ``model`` adds an optional local LLM explanation."""
+        if document_a == document_b:
+            raise ComparisonError("Choose two different documents to compare.")
+        a, b = self._load(document_a), self._load(document_b)
+        config = self._settings.analysis
+        notices: list[str] = []
+
+        lexical = document_similarity(a.text, b.text)
+        exact = shingle_overlap(a.text, b.text)
+        semantic = coverage_a = coverage_b = None
+        similar: tuple[SimilarPassage, ...] = ()
+        unique_a: tuple[UniquePassage, ...] = ()
+        unique_b: tuple[UniquePassage, ...] = ()
+        grid = None
+        if a.vectors is not None and b.vectors is not None and a.passages and b.passages:
+            matches = _match_passages(a.vectors, b.vectors, config.heatmap_cells)
+            floor = config.unique_passage_threshold
+            limit = config.comparison_list_limit
+            semantic = float(
+                np.clip((matches.best_a.mean() + matches.best_b.mean()) / 2, 0.0, 1.0)
+            )
+            coverage_a = float((matches.best_a >= floor).mean())
+            coverage_b = float((matches.best_b >= floor).mean())
+            similar = _similar_passages(a, b, matches, config.similar_passage_threshold, limit)
+            unique_a = _unique_passages(a.passages, matches.best_a, floor, limit)
+            unique_b = _unique_passages(b.passages, matches.best_b, floor, limit)
+            grid = SimilarityGrid(
+                tuple(tuple(round(float(v), 3) for v in row) for row in matches.grid),
+                _axis_labels(a.passages, matches.grid.shape[0]),
+                _axis_labels(b.passages, matches.grid.shape[1]),
+            )
+            overall = config.semantic_weight * semantic + (1 - config.semantic_weight) * lexical
+        else:
+            overall = lexical
+            notices.append(
+                "Semantic comparison needs both documents to be indexed, so the overall score "
+                "uses lexical similarity only and similar passages are not shown."
+            )
+
+        common, topics_a, topics_b = self._topics(a, b)
+        if not (common or topics_a or topics_b):
+            notices.append("There is too little text to identify topics. Keywords are shown.")
+        keywords = compare_keywords(
+            [page["text"] for page in a.pages], [page["text"] for page in b.pages], _KEYWORD_POOL
+        )
+        differences = statement_differences(
+            document_sentences(a.pages),
+            document_sentences(b.pages),
+            config.statement_match_threshold,
+            config.comparison_list_limit,
+        )
+        scores = SimilarityScores(overall, semantic, lexical, exact, coverage_a, coverage_b)
+        parts = {
+            "document_a": document_a,
+            "document_b": document_b,
+            "filename_a": a.record.original_filename,
+            "filename_b": b.record.original_filename,
+            "scores": scores,
+            "common_topics": common,
+            "unique_topics_a": topics_a,
+            "unique_topics_b": topics_b,
+            "keywords": tuple(keywords),
+            "similar_passages": similar,
+            "unique_passages_a": unique_a,
+            "unique_passages_b": unique_b,
+            "differences": differences,
+            "grid": grid,
+        }
+        summary = _describe(parts)
+        explanation = None
+        if model:
+            try:
+                explanation, warnings = self._explain(summary, differences, unique_a, unique_b, model)
+                notices += warnings
+            except OllamaError as exc:
+                logger.warning("LLM explanation failed: %s", type(exc).__name__)
+                notices.append(f"The local LLM could not be used: {exc}")
+        return Comparison(
+            **parts,
+            summary=summary,
+            explanation=explanation,
+            explanation_model=model if explanation else None,
+            notices=tuple(notices),
+        )
+
+    def _load(self, document_id: str) -> _Side:
+        document = self._db.get_document(document_id)
+        if document is None or document.status is not DocumentStatus.READY:
+            raise ComparisonError("Both documents need extracted text to be compared.")
+        pages = [p for p in read_content(self._settings.paths, document_id)["pages"] if p["text"]]
+        passages: list[tuple[str, int | None]] = []
+        vectors = None
+        if document.index_status is IndexStatus.INDEXED:
+            passages = [
+                (passage, chunk.page_number)
+                for chunk in self._indexer.load_chunks(document_id)
+                for passage in chunk.passages
+            ]
+            vectors = self._indexer.load_passage_vectors(document_id)
+        return _Side(document, pages, "\n".join(p["text"] for p in pages), passages, vectors)
+
+    def _topics(
+        self, a: _Side, b: _Side
+    ) -> tuple[tuple[TopicOverlap, ...], tuple[TopicOverlap, ...], tuple[TopicOverlap, ...]]:
+        """Find topics across both documents, then check which documents contain each one.
+
+        Presence comes from a topic's terms, not from which chunks it was found in, because
+        chunk boundaries depend on layout: the same text as a PDF and a TXT splits differently.
+        """
+        config = self._settings.analysis
+        segments = replace(
+            self._settings.chunking,
+            chunk_size_tokens=_TOPIC_SEGMENT_TOKENS,
+            chunk_overlap_tokens=0,
+        )
+        chunks = [
+            *chunk_pages(a.record.document_id, a.pages, segments),
+            *chunk_pages(b.record.document_id, b.pages, segments),
+        ]
+        topics = identify_topics(chunks, config.max_topics, config.terms_per_topic, 1)
+        words_a, words_b = _words(a.text), _words(b.text)
+        common: list[TopicOverlap] = []
+        only_a: list[TopicOverlap] = []
+        only_b: list[TopicOverlap] = []
+        for topic in topics:
+            overlap = TopicOverlap(
+                topic.label,
+                _term_presence(topic.terms, words_a),
+                _term_presence(topic.terms, words_b),
+            )
+            if min(overlap.presence_a, overlap.presence_b) >= _TOPIC_PRESENCE:
+                common.append(overlap)
+            elif overlap.presence_a >= overlap.presence_b:
+                only_a.append(overlap)
+            else:
+                only_b.append(overlap)
+        return tuple(common), tuple(only_a), tuple(only_b)
+
+    def _explain(
+        self,
+        summary: str,
+        differences: Sequence[StatementDifference],
+        unique_a: Sequence[UniquePassage],
+        unique_b: Sequence[UniquePassage],
+        model: str,
+    ) -> tuple[str, list[str]]:
+        """Ask the local LLM to explain the results, then check its figures against them."""
+        facts = [summary]
+        for item in differences:
+            facts.append(f"Document A says: {item.text_a}\nDocument B says: {item.text_b}")
+        facts += [f"Only in document A: {item.text}" for item in unique_a]
+        facts += [f"Only in document B: {item.text}" for item in unique_b]
+        budget = self._settings.ollama.summary_input_tokens
+        kept: list[str] = []
+        used = 0
+        for fact in facts:
+            cleaned = _safe(fact)
+            used += estimate_tokens(cleaned)
+            if kept and used > budget:
+                break
+            kept.append(cleaned)
+        source = "\n\n".join(kept)
+        prompt = f"<comparison>\n{source}\n</comparison>"
+        reply = self._llm.generate(_SYSTEM_PROMPT, prompt, model, max_tokens=_EXPLANATION_TOKENS)
+        missing = unverified_numbers(reply, source)
+        warnings = []
+        if missing:
+            warnings.append(
+                "These figures in the explanation are not in the comparison, so verify them: "
+                + ", ".join(missing)
+            )
+        return reply, warnings
