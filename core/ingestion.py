@@ -14,7 +14,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from config import Settings
+from config import Paths, Settings
 from config import settings as default_settings
 from core.document_loader import (
     ExtractedDocument,
@@ -232,6 +232,16 @@ class DocumentIngestor:
         self._db.delete_document(document_id)
         logger.info("Deleted document %s", document_id)
         return True
+
+    @property
+    def paths(self) -> Paths:
+        return self._settings.paths
+
+    def delete_all(self) -> int:
+        """Delete every document and all history. Returns how many documents were removed."""
+        removed = sum(self.delete(doc.document_id) for doc in self._db.list_documents())
+        self._db.clear_history()
+        return removed
 
     def recover_interrupted(self) -> int:
         """Mark documents left in ``processing`` by a crash as failed. Call once at startup."""
