@@ -2,7 +2,7 @@
 
 DocuMind is a standalone application for understanding documents: upload PDF, DOCX or TXT files, then summarize them, ask questions, extract key information and compare them. All AI processing runs on your own computer. It needs no API keys or cloud accounts.
 
-> **Status: Phase 4 (summaries and question answering).** Upload, search, summaries and document chat work, with a local LLM through Ollama or with an extractive fallback. Comparison and insights are not implemented yet, and the pages are functional until Phase 6 replaces their design. The full README is written in Phase 8.
+> **Status: Phase 5 (comparison and insights).** Upload, search, summaries, document chat, comparison, insights, charts and exports work, with a local LLM through Ollama or without one. The pages are functional until Phase 6 replaces their design. The full README is written in Phase 8.
 
 ## Architecture
 
@@ -37,9 +37,11 @@ config.py   Every setting. Any layer may import it.
 | `core/summarizer.py` | Quick, detailed and executive summaries, by LLM or extractive fallback |
 | `core/question_answering.py` | Evidence-grounded answers with citations, or an explicit refusal |
 | `core/document_comparator.py` | Semantic, lexical and numeric comparison of two documents |
+| `core/insights.py` | Names, dates, figures, themes, conclusions and document statistics |
+| `core/exporter.py` | CSV, JSON and PDF exports, kept local |
 | `database/schema.py` | Table definitions and schema version |
 | `database/db_manager.py` | Connections, migrations and all metadata reads and writes |
-| `ui/*.py` | One module per page, plus shared `components.py` |
+| `ui/*.py` | One module per page, plus shared `components.py` and `charts.py` |
 | `utils/file_validation.py` | Extension, size and file signature checks; safe storage paths |
 | `utils/text_utils.py` | Sentence splitting and token estimation |
 | `utils/logging_config.py` | Rotating local log files |
@@ -85,6 +87,12 @@ A document whose text was extracted but could not be indexed, for example becaus
 - **Answers are checked, not trusted.** Small models do not follow rules reliably, so nothing rests on the prompt alone. The model is not called when retrieval finds no evidence. Text that looks like instructions is removed before the prompt is built. Afterwards, invented citations are removed and unsupported figures and wording are flagged. Every answer and summary states whether an LLM wrote it or sentences were copied.
 - **Thinking is requested, then thrown away.** `qwen3:4b` ignores `think: false` and writes its reasoning into the reply. With `think: true`, Ollama returns that reasoning in a separate field that DocuMind never uses, so `thinking_tokens` adds room for it to the output limit.
 - **Long documents are summarized in parts.** Each part fits one prompt, the notes are merged in rounds if needed, and sections missing from a cut-off reply are reported.
+- **Comparison scores are separate calculations.** Semantic is the cosine similarity of each passage's best match, averaged in both directions. Lexical is TF-IDF cosine similarity. Exact wording is the Jaccard overlap of five-word sequences. Overall is 70% semantic and 30% lexical. None of them says whether a document is correct.
+- **Comparison thresholds are measured.** On test documents, the same text scored 1.00, a revised copy 0.96, a reworded summary 0.37 and unrelated documents 0.12 to 0.16. No passage from an unrelated document scored above 0.41, so `unique_passage_threshold` is 0.50.
+- **Statements are paired with their figures hidden.** Sentences that differ only in a number therefore pair up as one statement and are reported as a numeric difference. Stop words are kept here, because "not" can reverse a statement.
+- **Topic presence comes from terms, not chunks.** The same text splits differently as a PDF and a TXT, so a topic counts as present in a document when most of its terms appear there.
+- **Stored embeddings are reused.** Comparison reads each document's saved vectors and never embeds a document again.
+- **Exports are hardened.** CSV cells that a spreadsheet would run as formulas are neutralized, and document text is escaped before it reaches the PDF builder.
 - **Ollama is restricted to loopback.** `config.py` rejects any Ollama URL that does not point at this machine.
 - **Streamlit telemetry is off** and the server binds to `localhost` (see `.streamlit/config.toml`).
 
